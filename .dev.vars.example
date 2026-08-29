@@ -1,0 +1,5 @@
+# Local auth is disabled by default in wrangler.jsonc. To exercise Telegram OIDC
+# locally, set AUTH_MODE=telegram and provide all values below.
+TELEGRAM_OIDC_CLIENT_ID="replace-with-botfather-client-id"
+TELEGRAM_OIDC_CLIENT_SECRET="replace-with-botfather-client-secret"
+AUTH_FLOW_SECRET="replace-with-32-random-bytes-as-base64url"

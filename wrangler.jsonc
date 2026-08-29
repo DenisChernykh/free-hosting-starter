@@ -1,0 +1,57 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "free-hosting-starter-local",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-28",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "AUTH_MODE": "disabled",
+    "APP_ORIGIN": "http://localhost:8787",
+    "AUTH_SUCCESS_REDIRECT_URL": "http://localhost:8787/api/auth/me",
+    "BUILD_REVISION": "local"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "free-hosting-starter-db",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": {
+      "invocation_logs": false
+    }
+  },
+  "env": {
+    "production": {
+      "name": "free-hosting-starter",
+      "vars": {
+        "AUTH_MODE": "telegram",
+        "APP_ORIGIN": "https://free-hosting-starter.example.workers.dev",
+        "AUTH_SUCCESS_REDIRECT_URL": "https://free-hosting-starter.example.workers.dev/api/auth/me",
+        "BUILD_REVISION": "production"
+      },
+      "secrets": {
+        "required": ["TELEGRAM_OIDC_CLIENT_ID", "TELEGRAM_OIDC_CLIENT_SECRET", "AUTH_FLOW_SECRET"]
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "free-hosting-starter-db",
+          "database_id": "00000000-0000-0000-0000-000000000000",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        }
+      }
+    }
+  }
+}
