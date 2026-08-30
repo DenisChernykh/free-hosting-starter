@@ -5,6 +5,7 @@ import type { TelegramRuntimeConfig } from "../../../platform/config/runtime-con
 import { readRuntimeConfig } from "../../../platform/config/runtime-config";
 import type { WorkerHttpEnv } from "../../../platform/http/environment";
 import { applicationErrorToResponse, problem } from "../../../platform/http/problem-details";
+import { problemDetailsSchema } from "../../../platform/http/problem-details-schema";
 import { ApplicationError } from "../../../shared/application/application-error";
 import type {
   IdentitySessionRepository,
@@ -42,16 +43,12 @@ const userSchema = z
   })
   .openapi("AuthenticatedUser");
 
-const problemSchema = z
-  .object({
-    type: z.url(),
-    title: z.string(),
-    status: z.number().int(),
-    detail: z.string(),
-    instance: z.string(),
-    requestId: z.string(),
-  })
-  .openapi("ProblemDetails");
+const internalErrorResponse = {
+  500: {
+    description: "Unexpected server failure",
+    content: { "application/problem+json": { schema: problemDetailsSchema } },
+  },
+} as const;
 
 const startRoute = createRoute({
   method: "get",
@@ -61,8 +58,9 @@ const startRoute = createRoute({
     302: { description: "Redirect to Telegram authorization" },
     404: {
       description: "Telegram authentication is disabled",
-      content: { "application/problem+json": { schema: problemSchema } },
+      content: { "application/problem+json": { schema: problemDetailsSchema } },
     },
+    ...internalErrorResponse,
   },
 });
 
@@ -84,16 +82,17 @@ const callbackRoute = createRoute({
     302: { description: "Session created; redirect to configured success URL" },
     400: {
       description: "Invalid or declined login flow",
-      content: { "application/problem+json": { schema: problemSchema } },
+      content: { "application/problem+json": { schema: problemDetailsSchema } },
     },
     404: {
       description: "Telegram authentication is disabled",
-      content: { "application/problem+json": { schema: problemSchema } },
+      content: { "application/problem+json": { schema: problemDetailsSchema } },
     },
     503: {
       description: "Telegram is unavailable or returned an invalid token",
-      content: { "application/problem+json": { schema: problemSchema } },
+      content: { "application/problem+json": { schema: problemDetailsSchema } },
     },
+    ...internalErrorResponse,
   },
 });
 
@@ -109,12 +108,13 @@ const meRoute = createRoute({
     },
     401: {
       description: "Missing, expired, or invalid session",
-      content: { "application/problem+json": { schema: problemSchema } },
+      content: { "application/problem+json": { schema: problemDetailsSchema } },
     },
     404: {
       description: "Telegram authentication is disabled",
-      content: { "application/problem+json": { schema: problemSchema } },
+      content: { "application/problem+json": { schema: problemDetailsSchema } },
     },
+    ...internalErrorResponse,
   },
 });
 
@@ -126,12 +126,13 @@ const logoutRoute = createRoute({
     204: { description: "Session revoked when present" },
     403: {
       description: "Untrusted Origin",
-      content: { "application/problem+json": { schema: problemSchema } },
+      content: { "application/problem+json": { schema: problemDetailsSchema } },
     },
     404: {
       description: "Telegram authentication is disabled",
-      content: { "application/problem+json": { schema: problemSchema } },
+      content: { "application/problem+json": { schema: problemDetailsSchema } },
     },
+    ...internalErrorResponse,
   },
 });
 
@@ -208,6 +209,7 @@ export function createIdentityHttp(dependencies: IdentityHttpDependencies): {
     defaultHook: (result, c) => {
       if (!result.success) {
         return problem(c, {
+          code: "VALIDATION_FAILED",
           type: "https://free-hosting-starter.dev/problems/validation-error",
           title: "Validation failed",
           status: 400,
@@ -220,6 +222,7 @@ export function createIdentityHttp(dependencies: IdentityHttpDependencies): {
   const authentication: MiddlewareHandler<IdentityHttpEnv> = async (c, next) => {
     if (!telegramConfig(c.env)) {
       c.res = problem(c, {
+        code: "NOT_FOUND",
         type: "https://free-hosting-starter.dev/problems/not-found",
         title: "Not found",
         status: 404,
@@ -260,6 +263,7 @@ export function createIdentityHttp(dependencies: IdentityHttpDependencies): {
     const config = telegramConfig(c.env);
     if (!config) {
       return problem(c, {
+        code: "NOT_FOUND",
         type: "https://free-hosting-starter.dev/problems/not-found",
         title: "Not found",
         status: 404,
@@ -282,6 +286,7 @@ export function createIdentityHttp(dependencies: IdentityHttpDependencies): {
     const config = telegramConfig(c.env);
     if (!config) {
       return problem(c, {
+        code: "NOT_FOUND",
         type: "https://free-hosting-starter.dev/problems/not-found",
         title: "Not found",
         status: 404,
@@ -332,6 +337,7 @@ export function createIdentityHttp(dependencies: IdentityHttpDependencies): {
   router.openapi(logoutRoute, async (c) => {
     if (!telegramConfig(c.env)) {
       return problem(c, {
+        code: "NOT_FOUND",
         type: "https://free-hosting-starter.dev/problems/not-found",
         title: "Not found",
         status: 404,

@@ -9,6 +9,7 @@ import type {
 } from "../src/modules/identity-access/application/model";
 import { AesGcmLoginFlowCodec } from "../src/modules/identity-access/infrastructure/aes-gcm-login-flow-codec";
 import { TelegramOidcHttpClient } from "../src/modules/identity-access/infrastructure/telegram-oidc-client";
+import type { ProblemDetails } from "../src/platform/http/problem-details";
 
 const APP_ORIGIN = "https://free-hosting-starter.example.workers.dev";
 const FLOW_SECRET = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -120,6 +121,23 @@ async function apiRequest(
   return app.request(`${APP_ORIGIN}${pathname}`, { ...init, headers }, telegramBindings);
 }
 
+async function expectProblem(
+  response: Response,
+  expected: Pick<ProblemDetails, "code" | "detail" | "status" | "title" | "type">,
+): Promise<ProblemDetails> {
+  expect(response.headers.get("Content-Type")).toMatch(/^application\/problem\+json\b/u);
+  const body = (await response.json()) as ProblemDetails;
+  expect(body).toMatchObject(expected);
+  expect(body.status).toBe(response.status);
+  expect(body.requestId).toBe(response.headers.get("X-Request-Id"));
+  expect(body.instance).toMatch(/^\//u);
+  expect(body.instance).not.toContain("?");
+  expect(body.instance).toBe(
+    `${body.instance.split("#", 1)[0]}#${encodeURIComponent(body.requestId)}`,
+  );
+  return body;
+}
+
 beforeEach(async () => {
   await env.DB.batch([
     env.DB.prepare("DELETE FROM notes"),
@@ -143,8 +161,12 @@ describe("public Worker contract", () => {
     );
     expect(specification.status).toBe(200);
     const document = (await specification.json()) as {
+      components: { schemas: Record<string, unknown> };
       openapi: string;
-      paths: Record<string, unknown>;
+      paths: Record<
+        string,
+        Partial<Record<"delete" | "get" | "patch" | "post", { responses: Record<string, unknown> }>>
+      >;
     };
     expect(document.openapi).toBe("3.1.0");
     expect(Object.keys(document.paths)).toEqual(
@@ -158,6 +180,67 @@ describe("public Worker contract", () => {
         "/api/notes/{noteId}",
       ]),
     );
+    expect(document.components.schemas).toHaveProperty("ProblemDetails");
+    expect(document.components.schemas).toHaveProperty("NoteNotFoundProblemDetails");
+    expect(JSON.stringify(document.components.schemas)).toContain("NOTE_NOT_FOUND");
+    expect(document.components.schemas.ProblemDetails).toMatchObject({
+      properties: {
+        code: { pattern: "^[A-Z][A-Z0-9_]*$", type: "string" },
+        instance: { pattern: "^\\/", type: "string" },
+      },
+      required: expect.arrayContaining([
+        "type",
+        "title",
+        "status",
+        "detail",
+        "instance",
+        "code",
+        "requestId",
+      ]),
+      type: "object",
+    });
+    expect(Object.keys(document.paths["/api/notes"]?.get?.responses ?? {})).toEqual([
+      "200",
+      "400",
+      "401",
+      "404",
+      "500",
+    ]);
+    expect(Object.keys(document.paths["/api/notes"]?.post?.responses ?? {})).toEqual([
+      "201",
+      "400",
+      "401",
+      "403",
+      "404",
+      "413",
+      "415",
+      "500",
+    ]);
+    expect(Object.keys(document.paths["/api/notes/{noteId}"]?.get?.responses ?? {})).toEqual([
+      "200",
+      "400",
+      "401",
+      "404",
+      "500",
+    ]);
+    expect(Object.keys(document.paths["/api/notes/{noteId}"]?.patch?.responses ?? {})).toEqual([
+      "200",
+      "400",
+      "401",
+      "403",
+      "404",
+      "413",
+      "415",
+      "500",
+    ]);
+    expect(Object.keys(document.paths["/api/notes/{noteId}"]?.delete?.responses ?? {})).toEqual([
+      "204",
+      "400",
+      "401",
+      "403",
+      "404",
+      "500",
+    ]);
 
     const disabledAuth = await app.request(
       "http://localhost:8787/api/auth/telegram/start",
@@ -165,12 +248,77 @@ describe("public Worker contract", () => {
       disabledBindings,
     );
     expect(disabledAuth.status).toBe(404);
+    await expectProblem(disabledAuth, {
+      code: "NOT_FOUND",
+      detail: "The requested resource was not found.",
+      status: 404,
+      title: "Not found",
+      type: "https://free-hosting-starter.dev/problems/not-found",
+    });
     const disabledLogout = await app.request(
       "http://localhost:8787/api/auth/logout",
       { method: "POST" },
       disabledBindings,
     );
     expect(disabledLogout.status).toBe(404);
+    await expectProblem(disabledLogout, {
+      code: "NOT_FOUND",
+      detail: "The requested resource was not found.",
+      status: 404,
+      title: "Not found",
+      type: "https://free-hosting-starter.dev/problems/not-found",
+    });
+  });
+
+  it("returns Problem Details when OpenAPI generation fails", async () => {
+    const failingApp = createApp();
+    vi.spyOn(failingApp, "getOpenAPI31Document").mockImplementation(() => {
+      throw new Error("sensitive OpenAPI generation failure");
+    });
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const response = await failingApp.request(
+        "http://localhost:8787/openapi.json?secret=do-not-reflect",
+        undefined,
+        { ...env, BUILD_REVISION: "local" },
+      );
+      const body = await expectProblem(response, {
+        code: "INTERNAL_ERROR",
+        detail: "The request could not be completed.",
+        status: 500,
+        title: "Internal server error",
+        type: "https://free-hosting-starter.dev/problems/internal-server-error",
+      });
+      expect(JSON.stringify(body)).not.toContain("sensitive");
+      expect(JSON.stringify(body)).not.toContain("secret=");
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it("uses an occurrence-specific instance for repeated failures on the same path", async () => {
+    const disabledBindings = { ...env, BUILD_REVISION: "local" } satisfies CloudflareBindings;
+    const request = () =>
+      app.request("http://localhost:8787/missing-resource", undefined, disabledBindings);
+
+    const first = await expectProblem(await request(), {
+      code: "NOT_FOUND",
+      detail: "The requested resource was not found.",
+      status: 404,
+      title: "Not found",
+      type: "https://free-hosting-starter.dev/problems/not-found",
+    });
+    const second = await expectProblem(await request(), {
+      code: "NOT_FOUND",
+      detail: "The requested resource was not found.",
+      status: 404,
+      title: "Not found",
+      type: "https://free-hosting-starter.dev/problems/not-found",
+    });
+
+    expect(first.instance).not.toBe(second.instance);
+    expect(first.instance.split("#", 1)[0]).toBe(second.instance.split("#", 1)[0]);
   });
 });
 
@@ -189,6 +337,15 @@ describe("Telegram session and owned Notes reference", () => {
     );
     expect(callback.status).toBe(400);
     expect(callback.headers.get("Set-Cookie")).toBeNull();
+    const callbackProblem = await expectProblem(callback, {
+      code: "INVALID_REQUEST",
+      detail: "The Telegram login state is invalid.",
+      status: 400,
+      title: "Invalid request",
+      type: "https://free-hosting-starter.dev/problems/invalid-request",
+    });
+    expect(JSON.stringify(callbackProblem)).not.toContain("unused");
+    expect(JSON.stringify(callbackProblem)).not.toContain("state=");
   });
 
   it("covers login, CRUD, owner isolation, CSRF, and logout", async () => {
@@ -227,12 +384,26 @@ describe("Telegram session and owned Notes reference", () => {
       telegramBindings,
     );
     expect(rejectedOrigin.status).toBe(403);
+    await expectProblem(rejectedOrigin, {
+      code: "UNTRUSTED_ORIGIN",
+      detail: "The request Origin does not match APP_ORIGIN.",
+      status: 403,
+      title: "Forbidden",
+      type: "https://free-hosting-starter.dev/problems/untrusted-origin",
+    });
 
     const missingContentType = await apiRequest("/api/notes", firstSession, {
       method: "POST",
       body: JSON.stringify({ title: "Private", body: "Body" }),
     });
     expect(missingContentType.status).toBe(415);
+    await expectProblem(missingContentType, {
+      code: "UNSUPPORTED_MEDIA_TYPE",
+      detail: "This endpoint requires an application/json request body.",
+      status: 415,
+      title: "Unsupported media type",
+      type: "https://free-hosting-starter.dev/problems/unsupported-media-type",
+    });
 
     const oversizedJson = JSON.stringify({ title: "Large", body: "x".repeat(70 * 1024) });
     const oversizedRequest = new Request(`${APP_ORIGIN}/api/notes`, {
@@ -251,6 +422,13 @@ describe("Telegram session and owned Notes reference", () => {
     });
     const oversized = await app.fetch(oversizedRequest, telegramBindings);
     expect(oversized.status).toBe(413);
+    await expectProblem(oversized, {
+      code: "PAYLOAD_TOO_LARGE",
+      detail: "The request body exceeds the accepted size.",
+      status: 413,
+      title: "Content too large",
+      type: "https://free-hosting-starter.dev/problems/content-too-large",
+    });
 
     const created = await apiRequest("/api/notes", firstSession, {
       method: "POST",
@@ -277,6 +455,27 @@ describe("Telegram session and owned Notes reference", () => {
       secondSession,
     );
     expect(hiddenFromOtherOwner.status).toBe(404);
+    const hiddenProblem = await expectProblem(hiddenFromOtherOwner, {
+      code: "NOTE_NOT_FOUND",
+      detail: "The note was not found.",
+      status: 404,
+      title: "Note not found",
+      type: "https://free-hosting-starter.dev/problems/note-not-found",
+    });
+    const missingNote = await apiRequest(`/api/notes/${crypto.randomUUID()}`, secondSession);
+    const missingProblem = await expectProblem(missingNote, {
+      code: "NOTE_NOT_FOUND",
+      detail: "The note was not found.",
+      status: 404,
+      title: "Note not found",
+      type: "https://free-hosting-starter.dev/problems/note-not-found",
+    });
+    expect({ ...hiddenProblem, instance: undefined, requestId: undefined }).toEqual({
+      ...missingProblem,
+      instance: undefined,
+      requestId: undefined,
+    });
+    expect(hiddenProblem.instance).not.toBe(missingProblem.instance);
 
     const updated = await apiRequest(`/api/notes/${createdBody.note.id}`, firstSession, {
       method: "PATCH",
@@ -296,6 +495,13 @@ describe("Telegram session and owned Notes reference", () => {
     expect(logout.headers.get("Set-Cookie")).toContain("__Host-session=");
     const rejectedSession = await apiRequest("/api/auth/me", firstSession);
     expect(rejectedSession.status).toBe(401);
+    await expectProblem(rejectedSession, {
+      code: "UNAUTHENTICATED",
+      detail: "A valid session is required.",
+      status: 401,
+      title: "Unauthenticated",
+      type: "https://free-hosting-starter.dev/problems/unauthenticated",
+    });
   });
 });
 

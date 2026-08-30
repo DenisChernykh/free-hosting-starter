@@ -1,10 +1,16 @@
-import { ApplicationError } from "../../../shared/application/application-error";
+import {
+  NoteBodyTooLongError,
+  NoteNotFoundError,
+  NotePatchEmptyError,
+  NotesLimitInvalidError,
+  NoteTitleInvalidError,
+} from "./errors";
 import type { Note, NoteChanges } from "./model";
 import type { NotesRepository } from "./ports";
 
 function requireNote(note: Note | null): Note {
   if (!note) {
-    throw new ApplicationError("NOT_FOUND", "The note was not found.");
+    throw new NoteNotFoundError();
   }
   return note;
 }
@@ -12,14 +18,14 @@ function requireNote(note: Note | null): Note {
 function normalizeTitle(title: string): string {
   const normalized = title.trim();
   if (normalized.length < 1 || normalized.length > 120) {
-    throw new ApplicationError("INVALID_REQUEST", "Note title must contain 1 to 120 characters.");
+    throw new NoteTitleInvalidError();
   }
   return normalized;
 }
 
 function requireValidBody(body: string): string {
   if (body.length > 10_000) {
-    throw new ApplicationError("INVALID_REQUEST", "Note body must not exceed 10000 characters.");
+    throw new NoteBodyTooLongError();
   }
   return body;
 }
@@ -44,10 +50,7 @@ export class ListNotes {
 
   execute(ownerId: string, limit: number): Promise<Note[]> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
-      throw new ApplicationError(
-        "INVALID_REQUEST",
-        "Notes limit must be an integer from 1 to 100.",
-      );
+      throw new NotesLimitInvalidError();
     }
     return this.repository.listOwned(ownerId, limit);
   }
@@ -71,7 +74,7 @@ export class UpdateNote {
     ownerId: string;
   }): Promise<Note> {
     if (input.changes.title === undefined && input.changes.body === undefined) {
-      throw new ApplicationError("INVALID_REQUEST", "At least one note field is required.");
+      throw new NotePatchEmptyError();
     }
     const changes: NoteChanges = { ...input.changes };
     if (changes.title !== undefined) {
@@ -94,7 +97,7 @@ export class DeleteNote {
 
   async execute(ownerId: string, noteId: string): Promise<void> {
     if (!(await this.repository.deleteOwned(noteId, ownerId))) {
-      throw new ApplicationError("NOT_FOUND", "The note was not found.");
+      throw new NoteNotFoundError();
     }
   }
 }
