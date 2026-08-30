@@ -10,16 +10,18 @@ export type ProblemDetails = {
   status: number;
   detail: string;
   instance: string;
+  code: string;
   requestId: string;
 };
 
-type ProblemInput = Omit<ProblemDetails, "instance" | "requestId">;
+export type ProblemInput = Omit<ProblemDetails, "instance" | "requestId">;
 
 export function problem(c: Context, input: ProblemInput): Response {
+  const requestId = c.get("requestId") as string;
   const body: ProblemDetails = {
     ...input,
-    instance: new URL(c.req.url).pathname,
-    requestId: c.get("requestId") as string,
+    instance: `${new URL(c.req.url).pathname}#${encodeURIComponent(requestId)}`,
+    requestId,
   };
 
   return c.json(body, input.status as ContentfulStatusCode, {
@@ -28,7 +30,7 @@ export function problem(c: Context, input: ProblemInput): Response {
 }
 
 export function applicationErrorToResponse(c: Context, error: ApplicationError): Response {
-  const mapping: Record<ApplicationError["code"], Omit<ProblemInput, "detail">> = {
+  const mapping: Record<ApplicationError["code"], Omit<ProblemInput, "code" | "detail">> = {
     DEPENDENCY_UNAVAILABLE: {
       status: 503,
       title: "Dependency unavailable",
@@ -56,5 +58,5 @@ export function applicationErrorToResponse(c: Context, error: ApplicationError):
     },
   };
 
-  return problem(c, { ...mapping[error.code], detail: error.message });
+  return problem(c, { ...mapping[error.code], code: error.code, detail: error.message });
 }

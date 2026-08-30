@@ -45,6 +45,7 @@ export const requireTrustedOrigin: MiddlewareHandler<WorkerHttpEnv> = async (c, 
     c.req.header("Sec-Fetch-Site") === "cross-site"
   ) {
     c.res = problem(c, {
+      code: "UNTRUSTED_ORIGIN",
       type: "https://free-hosting-starter.dev/problems/untrusted-origin",
       title: "Forbidden",
       status: 403,

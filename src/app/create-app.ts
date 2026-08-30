@@ -8,6 +8,7 @@ import { createNotesModule } from "../modules/notes";
 import { readRuntimeConfig } from "../platform/config/runtime-config";
 import type { WorkerHttpEnv } from "../platform/http/environment";
 import { applicationErrorToResponse, problem } from "../platform/http/problem-details";
+import { problemDetailsSchema } from "../platform/http/problem-details-schema";
 import { requestContext, requireTrustedOrigin } from "../platform/http/request-pipeline";
 import { ApplicationError } from "../shared/application/application-error";
 
@@ -29,6 +30,10 @@ const healthRoute = createRoute({
           schema: z.object({ status: z.literal("ok"), revision: z.string() }),
         },
       },
+    },
+    500: {
+      description: "Unexpected server failure",
+      content: { "application/problem+json": { schema: problemDetailsSchema } },
     },
   },
 });
@@ -57,17 +62,22 @@ export function createApp(options: AppOptions = {}): OpenAPIHono<AppEnv> {
     name: "__Host-session",
   });
 
-  app.doc31("/openapi.json", {
-    openapi: "3.1.0",
-    info: {
-      title: "Free Hosting Starter API",
-      version: "0.1.0",
-      description: "Cloudflare Workers and D1 starter for small MVP APIs.",
-    },
-  });
+  app.get("/openapi.json", (c) =>
+    c.json(
+      app.getOpenAPI31Document({
+        openapi: "3.1.0",
+        info: {
+          title: "Free Hosting Starter API",
+          version: "0.1.0",
+          description: "Cloudflare Workers and D1 starter for small MVP APIs.",
+        },
+      }),
+    ),
+  );
 
   app.notFound((c) =>
     problem(c, {
+      code: "NOT_FOUND",
       type: "https://free-hosting-starter.dev/problems/not-found",
       title: "Not found",
       status: 404,
@@ -89,6 +99,7 @@ export function createApp(options: AppOptions = {}): OpenAPIHono<AppEnv> {
       }),
     );
     return problem(c, {
+      code: "INTERNAL_ERROR",
       type: "https://free-hosting-starter.dev/problems/internal-server-error",
       title: "Internal server error",
       status: 500,

@@ -44,6 +44,30 @@ Objects, Cron, testcontainers, Swagger UI и автоматического prod
 Заголовок содержит от 1 до 120 символов, тело — не более 10 000 символов.
 Параметр списка `limit` принимает значения от 1 до 100, по умолчанию — 20.
 Ошибки API имеют формат Problem Details (`application/problem+json`, RFC 9457).
+Каждый такой ответ содержит стабильный машинный `code`, `instance` с безопасным
+pathname и fragment из `requestId` для конкретного возникновения проблемы, а
+также отдельный `requestId` для корреляции запроса. Query-параметры в
+`instance` не попадают. Клиентский код должен ветвиться по `code`, а не
+разбирать человекочитаемые `title` или `detail`.
+
+Например, отсутствующая и принадлежащая другому пользователю заметка намеренно
+дают одинаковую бизнес-проблему:
+
+```json
+{
+  "type": "https://free-hosting-starter.dev/problems/note-not-found",
+  "title": "Note not found",
+  "status": 404,
+  "detail": "The note was not found.",
+  "instance": "/api/notes/019...#opaque-request-id",
+  "code": "NOTE_NOT_FOUND",
+  "requestId": "opaque-request-id"
+}
+```
+
+`NOTE_NOT_FOUND` принадлежит модулю Notes. Транспортные ошибки используют
+общие коды вроде `VALIDATION_FAILED`, `UNSUPPORTED_MEDIA_TYPE` и
+`UNTRUSTED_ORIGIN`. Полный состав ответов является частью `/openapi.json`.
 
 В локальной конфигурации `AUTH_MODE=disabled`. Публичные маршруты остаются
 доступны, а Telegram auth и зависящий от него Notes API отвечают `404`. Это
@@ -85,10 +109,17 @@ src/
   `public-contracts.ts`;
 - `presentation` вызывает application use cases;
 - application-код не знает о Hono, D1 и Telegram SDK/HTTP;
+- application-ошибки принадлежат своему модулю, а presentation-слой переводит
+  их в безопасные Problem Details с фиксированными публичными текстами;
 - infrastructure реализует объявленные application ports;
 - каждый `index.ts` скрывает внутренний wiring своего модуля, а `src/app`
   соединяет только публичные module factories, без контейнера DI и декораторов;
 - generic repository отсутствует: ports выражают операции конкретной capability.
+
+Центрального registry бизнес-ошибок намеренно нет. Локального исчерпывающего
+маппера достаточно, пока модули собираются одним приложением. Registry имеет
+смысл добавлять позже как контроль уникальности `code`/`type` и сборщик общего
+каталога, если модулей и независимо работающих команд станет много.
 
 `pnpm boundaries:check` защищает эти правила. Такая структура остаётся лёгкой
 для MVP, но не требует болезненной перекладки каталогов, когда проект вырастет.

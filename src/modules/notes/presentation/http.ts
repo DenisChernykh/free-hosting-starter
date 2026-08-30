@@ -3,10 +3,12 @@ import type { MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import type { WorkerHttpEnv } from "../../../platform/http/environment";
 import { problem } from "../../../platform/http/problem-details";
+import { problemDetailsSchema } from "../../../platform/http/problem-details-schema";
 import { ApplicationError } from "../../../shared/application/application-error";
 import type { IdentityContextVariables } from "../../identity-access/public-contracts";
 import type { NotesRepository } from "../application/ports";
 import { CreateNote, DeleteNote, GetNote, ListNotes, UpdateNote } from "../application/use-cases";
+import { mapNotesError, noteResourceNotFoundProblemSchema } from "./problems";
 
 type NotesHttpEnv = WorkerHttpEnv<IdentityContextVariables>;
 
@@ -25,15 +27,6 @@ const noteSchema = z
   })
   .openapi("Note");
 
-const problemSchema = z.object({
-  type: z.url(),
-  title: z.string(),
-  status: z.number().int(),
-  detail: z.string(),
-  instance: z.string(),
-  requestId: z.string(),
-});
-
 const requireJsonBody: MiddlewareHandler<NotesHttpEnv> = async (c, next) => {
   if (c.req.method !== "POST" && c.req.method !== "PATCH") {
     await next();
@@ -45,6 +38,7 @@ const requireJsonBody: MiddlewareHandler<NotesHttpEnv> = async (c, next) => {
     )
   ) {
     c.res = problem(c, {
+      code: "UNSUPPORTED_MEDIA_TYPE",
       type: "https://free-hosting-starter.dev/problems/unsupported-media-type",
       title: "Unsupported media type",
       status: 415,
@@ -59,6 +53,7 @@ const limitNoteBody = bodyLimit({
   maxSize: 64 * 1024,
   onError: (c) =>
     problem(c, {
+      code: "PAYLOAD_TOO_LARGE",
       type: "https://free-hosting-starter.dev/problems/content-too-large",
       title: "Content too large",
       status: 413,
@@ -88,27 +83,38 @@ const notePatchSchema = z
 const commonErrors = {
   400: {
     description: "Request validation failed",
-    content: { "application/problem+json": { schema: problemSchema } },
+    content: { "application/problem+json": { schema: problemDetailsSchema } },
   },
   401: {
     description: "Authentication required",
-    content: { "application/problem+json": { schema: problemSchema } },
+    content: { "application/problem+json": { schema: problemDetailsSchema } },
   },
   403: {
     description: "Untrusted Origin",
-    content: { "application/problem+json": { schema: problemSchema } },
+    content: { "application/problem+json": { schema: problemDetailsSchema } },
   },
   404: {
     description: "Note not found or authentication feature disabled",
-    content: { "application/problem+json": { schema: problemSchema } },
+    content: { "application/problem+json": { schema: problemDetailsSchema } },
   },
   413: {
     description: "Request body is too large",
-    content: { "application/problem+json": { schema: problemSchema } },
+    content: { "application/problem+json": { schema: problemDetailsSchema } },
   },
   415: {
     description: "JSON Content-Type is required",
-    content: { "application/problem+json": { schema: problemSchema } },
+    content: { "application/problem+json": { schema: problemDetailsSchema } },
+  },
+  500: {
+    description: "Unexpected server failure",
+    content: { "application/problem+json": { schema: problemDetailsSchema } },
+  },
+} as const;
+
+const noteResourceNotFound = {
+  404: {
+    description: "Owned note not found or authentication feature disabled",
+    content: { "application/problem+json": { schema: noteResourceNotFoundProblemSchema } },
   },
 } as const;
 
@@ -161,6 +167,7 @@ const getNoteRoute = createRoute({
       content: { "application/json": { schema: z.object({ note: noteSchema }) } },
     },
     ...commonErrors,
+    ...noteResourceNotFound,
   },
 });
 
@@ -182,6 +189,7 @@ const updateNoteRoute = createRoute({
       content: { "application/json": { schema: z.object({ note: noteSchema }) } },
     },
     ...commonErrors,
+    ...noteResourceNotFound,
   },
 });
 
@@ -194,6 +202,7 @@ const deleteNoteRoute = createRoute({
   responses: {
     204: { description: "Owned note deleted" },
     ...commonErrors,
+    ...noteResourceNotFound,
   },
 });
 
@@ -212,6 +221,7 @@ export function createNotesHttp(dependencies: NotesHttpDependencies): OpenAPIHon
     defaultHook: (result, c) => {
       if (!result.success) {
         return problem(c, {
+          code: "VALIDATION_FAILED",
           type: "https://free-hosting-starter.dev/problems/validation-error",
           title: "Validation failed",
           status: 400,
@@ -219,6 +229,14 @@ export function createNotesHttp(dependencies: NotesHttpDependencies): OpenAPIHon
         });
       }
     },
+  });
+
+  router.onError((error, c) => {
+    const mapped = mapNotesError(error);
+    if (!mapped) {
+      throw error;
+    }
+    return problem(c, mapped);
   });
 
   router.use("/api/notes", requireJsonBody);
