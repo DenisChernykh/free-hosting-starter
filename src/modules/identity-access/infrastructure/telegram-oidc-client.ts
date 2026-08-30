@@ -13,6 +13,7 @@ const TELEGRAM_JWKS = createRemoteJWKSet(new URL(`${TELEGRAM_ISSUER}/.well-known
   timeoutDuration: 5_000,
 });
 const MAX_TOKEN_RESPONSE_BYTES = 64 * 1024;
+const TOKEN_REQUEST_TIMEOUT_MS = 5_000;
 
 const tokenResponseSchema = z.object({
   id_token: z.string().min(1),
@@ -92,6 +93,7 @@ export class TelegramOidcHttpClient implements TelegramOidcClient {
     now: number;
     redirectUri: string;
   }): Promise<ExternalIdentityProfile> {
+    const tokenRequestSignal = AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS);
     let failureStage = "token_request";
     let providerStatus: number | undefined;
     try {
@@ -108,11 +110,15 @@ export class TelegramOidcHttpClient implements TelegramOidcClient {
           grant_type: "authorization_code",
           redirect_uri: input.redirectUri,
         }),
-        redirect: "error",
-        signal: AbortSignal.timeout(5_000),
+        redirect: "manual",
+        signal: tokenRequestSignal,
       });
 
       providerStatus = response.status;
+      if (response.status >= 300 && response.status < 400) {
+        failureStage = "token_redirect";
+        throw new Error("Telegram token endpoint returned a redirect");
+      }
       failureStage = "token_http";
       if (!response.ok) {
         throw new Error(`Telegram token endpoint returned ${response.status}`);
@@ -153,6 +159,9 @@ export class TelegramOidcHttpClient implements TelegramOidcClient {
         photoUrl: claims.picture ?? null,
       };
     } catch (error) {
+      if (failureStage === "token_request") {
+        failureStage = tokenRequestSignal.aborted ? "token_timeout" : "token_transport";
+      }
       console.warn(
         JSON.stringify({
           event: "telegram_oidc_exchange_failed",

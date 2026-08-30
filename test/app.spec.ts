@@ -327,7 +327,7 @@ describe("production Telegram OIDC adapter", () => {
     vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = input instanceof Request ? input.url : input.toString();
       if (url === "https://oauth.telegram.org/token") {
-        expect(init?.redirect).toBe("error");
+        expect(init?.redirect).toBe("manual");
         expect(new Headers(init?.headers).get("Authorization")).toMatch(/^Basic /u);
         return Response.json({ id_token: idToken });
       }
@@ -367,6 +367,80 @@ describe("production Telegram OIDC adapter", () => {
       expect(diagnostic).not.toContain("client-secret");
       expect(diagnostic).not.toContain(idToken);
     } finally {
+      warning.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("rejects token endpoint redirects without following or exposing them", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
+      return new Response(null, {
+        headers: { Location: "https://redirect.invalid/private-value" },
+        status: 302,
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const client = new TelegramOidcHttpClient("123456789", "client-secret");
+      await expect(
+        client.exchangeCode({
+          code: "authorization-code",
+          codeVerifier: "v".repeat(43),
+          nonce: "expected-nonce",
+          now: Date.now(),
+          redirectUri: `${APP_ORIGIN}/api/auth/telegram/callback`,
+        }),
+      ).rejects.toMatchObject({
+        code: "DEPENDENCY_UNAVAILABLE",
+        message: "Telegram authentication could not be completed.",
+      });
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(fetchMock.mock.calls[0]?.[1]?.redirect).toBe("manual");
+      const diagnostic = String(warning.mock.calls[0]?.[0]);
+      expect(JSON.parse(diagnostic)).toEqual({
+        event: "telegram_oidc_exchange_failed",
+        providerStatus: 302,
+        stage: "token_redirect",
+      });
+      expect(diagnostic).not.toContain("redirect.invalid");
+      expect(diagnostic).not.toContain("authorization-code");
+      expect(diagnostic).not.toContain("client-secret");
+    } finally {
+      warning.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("classifies a token request timeout without exposing request values", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(AbortSignal.abort());
+    vi.stubGlobal("fetch", async () => {
+      throw new TypeError("sensitive transport message");
+    });
+
+    try {
+      const client = new TelegramOidcHttpClient("123456789", "client-secret");
+      await expect(
+        client.exchangeCode({
+          code: "authorization-code",
+          codeVerifier: "v".repeat(43),
+          nonce: "expected-nonce",
+          now: Date.now(),
+          redirectUri: `${APP_ORIGIN}/api/auth/telegram/callback`,
+        }),
+      ).rejects.toMatchObject({ code: "DEPENDENCY_UNAVAILABLE" });
+      const diagnostic = String(warning.mock.calls[0]?.[0]);
+      expect(JSON.parse(diagnostic)).toEqual({
+        event: "telegram_oidc_exchange_failed",
+        stage: "token_timeout",
+      });
+      expect(diagnostic).not.toContain("sensitive transport message");
+      expect(diagnostic).not.toContain("authorization-code");
+      expect(diagnostic).not.toContain("client-secret");
+    } finally {
+      timeout.mockRestore();
       warning.mockRestore();
       vi.unstubAllGlobals();
     }
