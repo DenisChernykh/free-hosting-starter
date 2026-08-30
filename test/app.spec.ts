@@ -301,6 +301,7 @@ describe("Telegram session and owned Notes reference", () => {
 
 describe("production Telegram OIDC adapter", () => {
   it("accepts a valid RS256 token and rejects one without exp", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const { privateKey, publicKey } = await generateKeyPair("RS256");
     const jwk = await exportJWK(publicKey);
     Object.assign(jwk, { alg: "RS256", kid: "test-key", use: "sig" });
@@ -355,7 +356,18 @@ describe("production Telegram OIDC adapter", () => {
       await expect(client.exchangeCode(input)).rejects.toMatchObject({
         code: "DEPENDENCY_UNAVAILABLE",
       });
+      expect(warning).toHaveBeenCalledOnce();
+      const diagnostic = String(warning.mock.calls[0]?.[0]);
+      expect(JSON.parse(diagnostic)).toEqual({
+        event: "telegram_oidc_exchange_failed",
+        providerStatus: 200,
+        stage: "claims",
+      });
+      expect(diagnostic).not.toContain("authorization-code");
+      expect(diagnostic).not.toContain("client-secret");
+      expect(diagnostic).not.toContain(idToken);
     } finally {
+      warning.mockRestore();
       vi.unstubAllGlobals();
     }
   });

@@ -20,7 +20,6 @@ const tokenResponseSchema = z.object({
 
 const profileClaimsSchema = z.object({
   sub: z.string().min(1).max(128),
-  nonce: z.string().min(1).max(256),
   iat: z.number().int().nonnegative(),
   exp: z.number().int().positive().max(4_102_444_800),
   name: z.string().trim().min(1).max(256).optional(),
@@ -93,6 +92,8 @@ export class TelegramOidcHttpClient implements TelegramOidcClient {
     now: number;
     redirectUri: string;
   }): Promise<ExternalIdentityProfile> {
+    let failureStage = "token_request";
+    let providerStatus: number | undefined;
     try {
       const response = await fetch(TOKEN_ENDPOINT, {
         method: "POST",
@@ -111,26 +112,36 @@ export class TelegramOidcHttpClient implements TelegramOidcClient {
         signal: AbortSignal.timeout(5_000),
       });
 
+      providerStatus = response.status;
+      failureStage = "token_http";
       if (!response.ok) {
         throw new Error(`Telegram token endpoint returned ${response.status}`);
       }
 
+      failureStage = "token_response_read";
       const encodedResponse = await readBoundedResponse(response);
+      failureStage = "token_response_parse";
       const tokenResponse = tokenResponseSchema.parse(JSON.parse(encodedResponse));
+      failureStage = "id_token_verify";
       const { payload } = await jwtVerify(tokenResponse.id_token, TELEGRAM_JWKS, {
         algorithms: ["RS256"],
         audience: this.clientId,
         issuer: TELEGRAM_ISSUER,
       });
+      failureStage = "claims";
       const claims = profileClaimsSchema.parse(payload);
+      failureStage = "audience";
       if (payload.aud !== this.clientId) {
         throw new Error("Telegram ID token audience must be a scalar client ID");
       }
+      failureStage = "issued_at";
       const issuedAtMs = claims.iat * 1000;
       if (issuedAtMs > input.now + 60_000 || input.now - issuedAtMs > 10 * 60 * 1000) {
         throw new Error("Telegram ID token was issued outside the accepted window");
       }
-      if (!(await timingSafeEqualStrings(claims.nonce, input.nonce))) {
+      failureStage = "nonce";
+      const nonce = z.string().min(1).max(256).parse(payload.nonce);
+      if (!(await timingSafeEqualStrings(nonce, input.nonce))) {
         throw new Error("Telegram ID token nonce mismatch");
       }
 
@@ -142,6 +153,13 @@ export class TelegramOidcHttpClient implements TelegramOidcClient {
         photoUrl: claims.picture ?? null,
       };
     } catch (error) {
+      console.warn(
+        JSON.stringify({
+          event: "telegram_oidc_exchange_failed",
+          providerStatus,
+          stage: failureStage,
+        }),
+      );
       throw new ApplicationError(
         "DEPENDENCY_UNAVAILABLE",
         "Telegram authentication could not be completed.",
