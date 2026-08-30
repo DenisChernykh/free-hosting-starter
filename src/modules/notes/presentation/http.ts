@@ -61,6 +61,14 @@ const limitNoteBody = bodyLimit({
     }),
 });
 
+const limitNoteJsonBody: MiddlewareHandler<NotesHttpEnv> = async (c, next) => {
+  if (c.req.method !== "POST" && c.req.method !== "PATCH") {
+    await next();
+    return;
+  }
+  return limitNoteBody(c, next);
+};
+
 const noteIdParameter = z.object({
   noteId: z.uuid().openapi({ param: { name: "noteId", in: "path" } }),
 });
@@ -89,24 +97,30 @@ const commonErrors = {
     description: "Authentication required",
     content: { "application/problem+json": { schema: problemDetailsSchema } },
   },
-  403: {
-    description: "Untrusted Origin",
-    content: { "application/problem+json": { schema: problemDetailsSchema } },
-  },
   404: {
     description: "Note not found or authentication feature disabled",
     content: { "application/problem+json": { schema: problemDetailsSchema } },
   },
+  500: {
+    description: "Unexpected server failure",
+    content: { "application/problem+json": { schema: problemDetailsSchema } },
+  },
+} as const;
+
+const unsafeRequestErrors = {
+  403: {
+    description: "Untrusted Origin",
+    content: { "application/problem+json": { schema: problemDetailsSchema } },
+  },
+} as const;
+
+const jsonBodyErrors = {
   413: {
     description: "Request body is too large",
     content: { "application/problem+json": { schema: problemDetailsSchema } },
   },
   415: {
     description: "JSON Content-Type is required",
-    content: { "application/problem+json": { schema: problemDetailsSchema } },
-  },
-  500: {
-    description: "Unexpected server failure",
     content: { "application/problem+json": { schema: problemDetailsSchema } },
   },
 } as const;
@@ -152,6 +166,8 @@ const createNoteRoute = createRoute({
       content: { "application/json": { schema: z.object({ note: noteSchema }) } },
     },
     ...commonErrors,
+    ...unsafeRequestErrors,
+    ...jsonBodyErrors,
   },
 });
 
@@ -189,6 +205,8 @@ const updateNoteRoute = createRoute({
       content: { "application/json": { schema: z.object({ note: noteSchema }) } },
     },
     ...commonErrors,
+    ...unsafeRequestErrors,
+    ...jsonBodyErrors,
     ...noteResourceNotFound,
   },
 });
@@ -202,6 +220,7 @@ const deleteNoteRoute = createRoute({
   responses: {
     204: { description: "Owned note deleted" },
     ...commonErrors,
+    ...unsafeRequestErrors,
     ...noteResourceNotFound,
   },
 });
@@ -241,8 +260,8 @@ export function createNotesHttp(dependencies: NotesHttpDependencies): OpenAPIHon
 
   router.use("/api/notes", requireJsonBody);
   router.use("/api/notes/*", requireJsonBody);
-  router.use("/api/notes", limitNoteBody);
-  router.use("/api/notes/*", limitNoteBody);
+  router.use("/api/notes", limitNoteJsonBody);
+  router.use("/api/notes/*", limitNoteJsonBody);
 
   router.openapi(listRoute, async (c) => {
     const ownerId = authenticatedOwnerId(c);

@@ -163,7 +163,10 @@ describe("public Worker contract", () => {
     const document = (await specification.json()) as {
       components: { schemas: Record<string, unknown> };
       openapi: string;
-      paths: Record<string, unknown>;
+      paths: Record<
+        string,
+        Partial<Record<"delete" | "get" | "patch" | "post", { responses: Record<string, unknown> }>>
+      >;
     };
     expect(document.openapi).toBe("3.1.0");
     expect(Object.keys(document.paths)).toEqual(
@@ -196,6 +199,48 @@ describe("public Worker contract", () => {
       ]),
       type: "object",
     });
+    expect(Object.keys(document.paths["/api/notes"]?.get?.responses ?? {})).toEqual([
+      "200",
+      "400",
+      "401",
+      "404",
+      "500",
+    ]);
+    expect(Object.keys(document.paths["/api/notes"]?.post?.responses ?? {})).toEqual([
+      "201",
+      "400",
+      "401",
+      "403",
+      "404",
+      "413",
+      "415",
+      "500",
+    ]);
+    expect(Object.keys(document.paths["/api/notes/{noteId}"]?.get?.responses ?? {})).toEqual([
+      "200",
+      "400",
+      "401",
+      "404",
+      "500",
+    ]);
+    expect(Object.keys(document.paths["/api/notes/{noteId}"]?.patch?.responses ?? {})).toEqual([
+      "200",
+      "400",
+      "401",
+      "403",
+      "404",
+      "413",
+      "415",
+      "500",
+    ]);
+    expect(Object.keys(document.paths["/api/notes/{noteId}"]?.delete?.responses ?? {})).toEqual([
+      "204",
+      "400",
+      "401",
+      "403",
+      "404",
+      "500",
+    ]);
 
     const disabledAuth = await app.request(
       "http://localhost:8787/api/auth/telegram/start",
