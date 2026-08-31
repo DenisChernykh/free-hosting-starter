@@ -6,9 +6,10 @@ const baseConfigSchema = z.object({
   AUTH_MODE: z.enum(["disabled", "telegram"]),
   AUTH_SUCCESS_REDIRECT_URL: z.url(),
   BUILD_REVISION: z.string().trim().min(1).max(128),
+  TELEGRAM_BOT_MODE: z.enum(["disabled", "webhook"]),
 });
 
-const telegramSecretsSchema = z.object({
+const telegramAuthSecretsSchema = z.object({
   AUTH_FLOW_SECRET: z
     .string()
     .trim()
@@ -26,6 +27,11 @@ const telegramSecretsSchema = z.object({
   TELEGRAM_OIDC_CLIENT_SECRET: z.string().trim().min(1).max(512),
 });
 
+const telegramBotSecretsSchema = z.object({
+  TELEGRAM_BOT_TOKEN: z.string().trim().min(1),
+  TELEGRAM_BOT_WEBHOOK_SECRET: z.string().regex(/^[A-Za-z0-9_-]{1,256}$/u),
+});
+
 type BaseRuntimeConfig = {
   appOrigin: string;
   authSuccessRedirectUrl: string;
@@ -36,16 +42,45 @@ export type DisabledRuntimeConfig = BaseRuntimeConfig & {
   authMode: "disabled";
 };
 
-export type TelegramRuntimeConfig = BaseRuntimeConfig & {
+export type TelegramAuthRuntimeConfig = {
   authFlowSecret: string;
   authMode: "telegram";
   telegramClientId: string;
   telegramClientSecret: string;
 };
 
-export type RuntimeConfig = DisabledRuntimeConfig | TelegramRuntimeConfig;
+export type TelegramRuntimeConfig = BaseRuntimeConfig & TelegramAuthRuntimeConfig;
 
-export function readRuntimeConfig(bindings: CloudflareBindings): RuntimeConfig {
+export type DisabledTelegramBotRuntimeConfig = {
+  telegramBotMode: "disabled";
+};
+
+export type WebhookTelegramBotRuntimeConfig = {
+  telegramBotMode: "webhook";
+  telegramBotToken: string;
+  telegramBotWebhookSecret: string;
+};
+
+export type TelegramBotRuntimeConfig =
+  | DisabledTelegramBotRuntimeConfig
+  | WebhookTelegramBotRuntimeConfig;
+
+export type AuthRuntimeConfig = Pick<DisabledRuntimeConfig, "authMode"> | TelegramAuthRuntimeConfig;
+
+export type RuntimeConfig = BaseRuntimeConfig & AuthRuntimeConfig & TelegramBotRuntimeConfig;
+
+type RuntimeModeBindings = {
+  TELEGRAM_BOT_MODE: "disabled" | "webhook";
+  TELEGRAM_BOT_TOKEN?: string;
+  TELEGRAM_BOT_WEBHOOK_SECRET?: string;
+};
+
+// Wrangler's required secret list is unconditional; keep bot secrets optional
+// here and let the selected bot mode decide whether they must be present.
+export type RuntimeConfigBindings = Omit<CloudflareBindings, "TELEGRAM_BOT_MODE"> &
+  RuntimeModeBindings;
+
+export function readRuntimeConfig(bindings: RuntimeConfigBindings): RuntimeConfig {
   const base = baseConfigSchema.parse(bindings);
   const appOriginUrl = new URL(base.APP_ORIGIN);
   const normalizedAppOrigin = appOriginUrl.origin;
@@ -69,16 +104,30 @@ export function readRuntimeConfig(bindings: CloudflareBindings): RuntimeConfig {
     buildRevision: base.BUILD_REVISION,
   };
 
-  if (base.AUTH_MODE === "disabled") {
-    return { ...common, authMode: "disabled" };
-  }
+  const auth: AuthRuntimeConfig =
+    base.AUTH_MODE === "disabled"
+      ? { authMode: "disabled" }
+      : (() => {
+          const telegram = telegramAuthSecretsSchema.parse(bindings);
+          return {
+            authFlowSecret: telegram.AUTH_FLOW_SECRET,
+            authMode: "telegram" as const,
+            telegramClientId: telegram.TELEGRAM_OIDC_CLIENT_ID,
+            telegramClientSecret: telegram.TELEGRAM_OIDC_CLIENT_SECRET,
+          };
+        })();
 
-  const telegram = telegramSecretsSchema.parse(bindings);
-  return {
-    ...common,
-    authFlowSecret: telegram.AUTH_FLOW_SECRET,
-    authMode: "telegram",
-    telegramClientId: telegram.TELEGRAM_OIDC_CLIENT_ID,
-    telegramClientSecret: telegram.TELEGRAM_OIDC_CLIENT_SECRET,
-  };
+  const telegramBot: TelegramBotRuntimeConfig =
+    base.TELEGRAM_BOT_MODE === "disabled"
+      ? { telegramBotMode: "disabled" }
+      : (() => {
+          const telegram = telegramBotSecretsSchema.parse(bindings);
+          return {
+            telegramBotMode: "webhook" as const,
+            telegramBotToken: telegram.TELEGRAM_BOT_TOKEN,
+            telegramBotWebhookSecret: telegram.TELEGRAM_BOT_WEBHOOK_SECRET,
+          };
+        })();
+
+  return { ...common, ...auth, ...telegramBot };
 }

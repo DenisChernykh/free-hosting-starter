@@ -1,6 +1,6 @@
 # Telegram Bot capability implementation plan
 
-Status: proposed
+Status: in progress
 
 Target: reusable backend capability for `free-hosting-starter`
 

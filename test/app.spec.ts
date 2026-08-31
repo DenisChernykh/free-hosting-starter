@@ -21,6 +21,7 @@ const telegramBindings: CloudflareBindings = {
   AUTH_MODE: "telegram",
   AUTH_SUCCESS_REDIRECT_URL: `${APP_ORIGIN}/api/auth/me`,
   BUILD_REVISION: "production",
+  TELEGRAM_BOT_MODE: "disabled",
   TELEGRAM_OIDC_CLIENT_ID: "123456789",
   TELEGRAM_OIDC_CLIENT_SECRET: "test-only-secret",
 };
