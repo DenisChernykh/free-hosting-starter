@@ -24,12 +24,14 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "wrangler d1 migrations apply free-hosting-starter-db --local",
     "db:migrate:remote": "wrangler d1 migrations apply free-hosting-starter-db --remote --env production",
+    "telegram:operator": "node scripts/telegram-bot-operator.mjs",
     "deploy:dry-run": "wrangler deploy --dry-run --env=",
     "deploy": "wrangler deploy --env production"
   },
   "dependencies": {
     "@hono/zod-openapi": "1.6.1",
     "drizzle-orm": "0.45.2",
+    "grammy": "1.46.0",
     "hono": "4.13.5",
     "jose": "6.2.10",
     "zod": "4.5.1"

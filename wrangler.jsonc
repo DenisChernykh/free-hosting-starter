@@ -8,7 +8,8 @@
     "AUTH_MODE": "disabled",
     "APP_ORIGIN": "http://localhost:8787",
     "AUTH_SUCCESS_REDIRECT_URL": "http://localhost:8787/api/auth/me",
-    "BUILD_REVISION": "local"
+    "BUILD_REVISION": "local",
+    "TELEGRAM_BOT_MODE": "disabled"
   },
   "d1_databases": [
     {
@@ -32,7 +33,8 @@
         "AUTH_MODE": "telegram",
         "APP_ORIGIN": "https://free-hosting-starter.example.workers.dev",
         "AUTH_SUCCESS_REDIRECT_URL": "https://free-hosting-starter.example.workers.dev/api/auth/me",
-        "BUILD_REVISION": "production"
+        "BUILD_REVISION": "production",
+        "TELEGRAM_BOT_MODE": "disabled"
       },
       "secrets": {
         "required": ["TELEGRAM_OIDC_CLIENT_ID", "TELEGRAM_OIDC_CLIENT_SECRET", "AUTH_FLOW_SECRET"]

@@ -5,6 +5,11 @@ import {
 } from "../modules/identity-access";
 import type { IdentityContextVariables } from "../modules/identity-access/public-contracts";
 import { createNotesModule } from "../modules/notes";
+import {
+  createTelegramBotModule,
+  TELEGRAM_WEBHOOK_SECURITY_SCHEME,
+  type TelegramBotModuleOptions,
+} from "../modules/telegram-bot";
 import { readRuntimeConfig } from "../platform/config/runtime-config";
 import type { WorkerHttpEnv } from "../platform/http/environment";
 import { applicationErrorToResponse, problem } from "../platform/http/problem-details";
@@ -16,6 +21,7 @@ type AppEnv = WorkerHttpEnv<IdentityContextVariables>;
 
 export type AppOptions = {
   identity?: IdentityAccessModuleOptions;
+  telegramBot?: TelegramBotModuleOptions;
 };
 
 const healthRoute = createRoute({
@@ -42,6 +48,7 @@ export function createApp(options: AppOptions = {}): OpenAPIHono<AppEnv> {
   const app = new OpenAPIHono<AppEnv>();
   const identity = createIdentityAccessModule(options.identity);
   const notes = createNotesModule();
+  const telegramBot = createTelegramBotModule(options.telegramBot);
 
   app.use("*", requestContext);
   app.use("/api/*", requireTrustedOrigin);
@@ -52,6 +59,7 @@ export function createApp(options: AppOptions = {}): OpenAPIHono<AppEnv> {
   });
 
   app.route("/", identity.router);
+  app.route("/", telegramBot.router);
   app.use("/api/notes", identity.authentication);
   app.use("/api/notes/*", identity.authentication);
   app.route("/", notes.router);
@@ -60,6 +68,12 @@ export function createApp(options: AppOptions = {}): OpenAPIHono<AppEnv> {
     type: "apiKey",
     in: "cookie",
     name: "__Host-session",
+  });
+
+  app.openAPIRegistry.registerComponent("securitySchemes", TELEGRAM_WEBHOOK_SECURITY_SCHEME, {
+    type: "apiKey",
+    in: "header",
+    name: "X-Telegram-Bot-Api-Secret-Token",
   });
 
   app.get("/openapi.json", (c) =>

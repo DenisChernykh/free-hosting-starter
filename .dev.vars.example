@@ -1,5 +1,10 @@
-# Local auth is disabled by default in wrangler.jsonc. To exercise Telegram OIDC
-# locally, set AUTH_MODE=telegram and provide all values below.
+# Local AUTH_MODE and TELEGRAM_BOT_MODE are disabled by default in wrangler.jsonc.
+# To exercise Telegram OIDC locally, set AUTH_MODE=telegram and provide its values.
 TELEGRAM_OIDC_CLIENT_ID="replace-with-botfather-client-id"
 TELEGRAM_OIDC_CLIENT_SECRET="replace-with-botfather-client-secret"
 AUTH_FLOW_SECRET="replace-with-32-random-bytes-as-base64url"
+
+# To exercise the Telegram webhook locally, set TELEGRAM_BOT_MODE=webhook and
+# provide both independent Bot API secrets below.
+TELEGRAM_BOT_TOKEN="replace-with-telegram-bot-token"
+TELEGRAM_BOT_WEBHOOK_SECRET="replace-with-webhook-secret"
