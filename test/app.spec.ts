@@ -561,6 +561,28 @@ describe("local development identity", () => {
     );
     expect(telegramStart.status).toBe(404);
   });
+
+  it("does not authenticate a request that is not served from localhost", async () => {
+    const response = await app.request(`${APP_ORIGIN}/api/auth/me`, undefined, developmentBindings);
+
+    expect(response.status).toBe(404);
+  });
+
+  it("replaces a Telegram session with the fixed development identity", async () => {
+    const telegramSession = await login("telegram-user");
+
+    const me = await app.request(
+      `${DEVELOPMENT_ORIGIN}/api/auth/me`,
+      { headers: { Cookie: `__Host-session=${telegramSession}` } },
+      developmentBindings,
+    );
+
+    expect(me.status).toBe(200);
+    expect(cookieValue(me, "__Host-session")).not.toBe(telegramSession);
+    expect(await me.json()).toMatchObject({
+      user: { displayName: "Local Developer", username: "local-developer" },
+    });
+  });
 });
 
 describe("production Telegram OIDC adapter", () => {

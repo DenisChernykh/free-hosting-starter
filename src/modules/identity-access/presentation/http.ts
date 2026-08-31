@@ -15,6 +15,7 @@ import type {
 import {
   AuthenticateSession,
   CompleteTelegramLogin,
+  FindDevelopmentSession,
   Logout,
   StartDevelopmentSession,
   StartTelegramLogin,
@@ -150,6 +151,10 @@ function callbackUrl(config: TelegramRuntimeConfig): string {
   return new URL(CALLBACK_PATH, config.appOrigin).toString();
 }
 
+function isLocalDevelopmentRequest(requestUrl: string, appOrigin: string): boolean {
+  return new URL(requestUrl).origin === appOrigin;
+}
+
 function setPrivateResponseHeaders(c: { header(name: string, value: string): void }): void {
   c.header("Cache-Control", "no-store");
   c.header("Pragma", "no-cache");
@@ -231,7 +236,10 @@ export function createIdentityHttp(dependencies: IdentityHttpDependencies): {
     }
 
     const config = readRuntimeConfig(c.env);
-    if (config.authMode === "disabled") {
+    if (
+      config.authMode === "disabled" ||
+      (config.authMode === "development" && !isLocalDevelopmentRequest(c.req.url, config.appOrigin))
+    ) {
       c.res = problem(c, {
         code: "NOT_FOUND",
         type: "https://free-hosting-starter.dev/problems/not-found",
@@ -246,18 +254,14 @@ export function createIdentityHttp(dependencies: IdentityHttpDependencies): {
     const repository = dependencies.createRepository(c.env.DB);
 
     if (config.authMode === "development") {
-      let user: AuthenticatedUser | undefined;
+      let user: AuthenticatedUser | null = null;
       if (sessionToken) {
-        try {
-          user = await new AuthenticateSession(repository).execute({
-            now: Date.now(),
-            sessionToken,
-          });
-        } catch (error) {
+        user = await new FindDevelopmentSession(repository).execute({
+          now: Date.now(),
+          sessionToken,
+        });
+        if (!user) {
           clearSessionCookie(c);
-          if (!(error instanceof ApplicationError)) {
-            throw error;
-          }
         }
       }
 
@@ -377,7 +381,11 @@ export function createIdentityHttp(dependencies: IdentityHttpDependencies): {
   });
 
   router.openapi(logoutRoute, async (c) => {
-    if (readRuntimeConfig(c.env).authMode === "disabled") {
+    const config = readRuntimeConfig(c.env);
+    if (
+      config.authMode === "disabled" ||
+      (config.authMode === "development" && !isLocalDevelopmentRequest(c.req.url, config.appOrigin))
+    ) {
       return problem(c, {
         code: "NOT_FOUND",
         type: "https://free-hosting-starter.dev/problems/not-found",

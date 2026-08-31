@@ -77,8 +77,10 @@ pathname и fragment из `requestId` для конкретного возник
 разрабатывать и вручную проверять новые модули, Notes и Origin-проверки без
 Telegram, HTTPS, туннелей или deploy. Это не проверка Telegram OIDC.
 
-Production preset не содержит этого режима, а runtime дополнительно отклоняет
-`AUTH_MODE=development`, если `BUILD_REVISION` отличается от `local`.
+Production preset не содержит этого режима. Runtime разрешает
+`AUTH_MODE=development` только с `BUILD_REVISION=local` и
+`http://localhost` origin, а development-сессию выдаёт лишь запросу с тем же
+локальным origin.
 
 ## Архитектура, которая растёт вместе с проектом
 

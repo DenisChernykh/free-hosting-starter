@@ -130,6 +130,18 @@ export class StartDevelopmentSession {
   }
 }
 
+export class FindDevelopmentSession {
+  constructor(private readonly repository: IdentitySessionRepository) {}
+
+  async execute(input: { now: number; sessionToken: string }): Promise<AuthenticatedUser | null> {
+    return this.repository.findUserBySessionForExternalIdentity(
+      await sha256Base64Url(input.sessionToken),
+      input.now,
+      DEVELOPMENT_IDENTITY,
+    );
+  }
+}
+
 export class AuthenticateSession {
   constructor(private readonly repository: IdentitySessionRepository) {}
 

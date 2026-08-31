@@ -92,6 +92,28 @@ export class D1IdentitySessionRepository implements IdentitySessionRepository {
     return row ? toUser(row.user) : null;
   }
 
+  async findUserBySessionForExternalIdentity(
+    tokenHash: string,
+    now: number,
+    identity: Pick<ExternalIdentityProfile, "issuer" | "subject">,
+  ): Promise<AuthenticatedUser | null> {
+    const [row] = await this.database
+      .select({ user: users })
+      .from(sessions)
+      .innerJoin(users, eq(users.id, sessions.userId))
+      .innerJoin(externalIdentities, eq(externalIdentities.userId, users.id))
+      .where(
+        and(
+          eq(sessions.tokenHash, tokenHash),
+          gt(sessions.expiresAt, now),
+          eq(externalIdentities.issuer, identity.issuer),
+          eq(externalIdentities.subject, identity.subject),
+        ),
+      )
+      .limit(1);
+    return row ? toUser(row.user) : null;
+  }
+
   async revokeSession(tokenHash: string): Promise<void> {
     await this.database.delete(sessions).where(eq(sessions.tokenHash, tokenHash));
   }

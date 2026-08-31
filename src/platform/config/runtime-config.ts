@@ -101,6 +101,12 @@ export function readRuntimeConfig(bindings: RuntimeConfigBindings): RuntimeConfi
   if (appOriginUrl.protocol !== "https:" && appOriginUrl.hostname !== "localhost") {
     throw new Error("APP_ORIGIN must use HTTPS outside localhost");
   }
+  if (
+    base.AUTH_MODE === "development" &&
+    (appOriginUrl.protocol !== "http:" || appOriginUrl.hostname !== "localhost")
+  ) {
+    throw new Error("AUTH_MODE=development is only permitted for http://localhost");
+  }
 
   const successUrl = new URL(base.AUTH_SUCCESS_REDIRECT_URL);
   if (successUrl.origin !== normalizedAppOrigin) {
