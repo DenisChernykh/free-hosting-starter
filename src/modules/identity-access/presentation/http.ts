@@ -16,10 +16,15 @@ import {
   AuthenticateSession,
   CompleteTelegramLogin,
   Logout,
+  StartDevelopmentSession,
   StartTelegramLogin,
   ValidateTelegramLoginFlow,
 } from "../application/use-cases";
-import { type IdentityContextVariables, SESSION_COOKIE_NAME } from "../public-contracts";
+import {
+  type AuthenticatedUser,
+  type IdentityContextVariables,
+  SESSION_COOKIE_NAME,
+} from "../public-contracts";
 
 const FLOW_COOKIE_NAME = "__Host-telegram-flow";
 const CALLBACK_PATH = "/api/auth/telegram/callback";
@@ -220,7 +225,13 @@ export function createIdentityHttp(dependencies: IdentityHttpDependencies): {
   });
 
   const authentication: MiddlewareHandler<IdentityHttpEnv> = async (c, next) => {
-    if (!telegramConfig(c.env)) {
+    if (c.get("authenticatedUser")) {
+      await next();
+      return;
+    }
+
+    const config = readRuntimeConfig(c.env);
+    if (config.authMode === "disabled") {
       c.res = problem(c, {
         code: "NOT_FOUND",
         type: "https://free-hosting-starter.dev/problems/not-found",
@@ -232,6 +243,38 @@ export function createIdentityHttp(dependencies: IdentityHttpDependencies): {
     }
 
     const sessionToken = getCookie(c, SESSION_COOKIE_NAME);
+    const repository = dependencies.createRepository(c.env.DB);
+
+    if (config.authMode === "development") {
+      let user: AuthenticatedUser | undefined;
+      if (sessionToken) {
+        try {
+          user = await new AuthenticateSession(repository).execute({
+            now: Date.now(),
+            sessionToken,
+          });
+        } catch (error) {
+          clearSessionCookie(c);
+          if (!(error instanceof ApplicationError)) {
+            throw error;
+          }
+        }
+      }
+
+      if (!user) {
+        const developmentSession = await new StartDevelopmentSession(repository).execute(
+          Date.now(),
+        );
+        user = developmentSession.user;
+        setSessionCookie(c, developmentSession.sessionToken);
+      }
+
+      c.set("authenticatedUser", user);
+      setPrivateResponseHeaders(c);
+      await next();
+      return;
+    }
+
     if (!sessionToken) {
       c.res = applicationErrorToResponse(
         c,
@@ -241,7 +284,6 @@ export function createIdentityHttp(dependencies: IdentityHttpDependencies): {
     }
 
     try {
-      const repository = dependencies.createRepository(c.env.DB);
       const user = await new AuthenticateSession(repository).execute({
         now: Date.now(),
         sessionToken,
@@ -335,7 +377,7 @@ export function createIdentityHttp(dependencies: IdentityHttpDependencies): {
   });
 
   router.openapi(logoutRoute, async (c) => {
-    if (!telegramConfig(c.env)) {
+    if (readRuntimeConfig(c.env).authMode === "disabled") {
       return problem(c, {
         code: "NOT_FOUND",
         type: "https://free-hosting-starter.dev/problems/not-found",

@@ -26,6 +26,16 @@ const telegramBindings: CloudflareBindings = {
   TELEGRAM_OIDC_CLIENT_SECRET: "test-only-secret",
 };
 
+const DEVELOPMENT_ORIGIN = "http://localhost:8787";
+const developmentBindings = {
+  ...env,
+  APP_ORIGIN: DEVELOPMENT_ORIGIN,
+  AUTH_MODE: "development",
+  AUTH_SUCCESS_REDIRECT_URL: `${DEVELOPMENT_ORIGIN}/api/auth/me`,
+  BUILD_REVISION: "local",
+  TELEGRAM_BOT_MODE: "disabled",
+} as unknown as CloudflareBindings;
+
 class FakeTelegramOidcClient implements TelegramOidcClient {
   buildAuthorizationUrl(input: {
     codeChallenge: string;
@@ -503,6 +513,53 @@ describe("Telegram session and owned Notes reference", () => {
       title: "Unauthenticated",
       type: "https://free-hosting-starter.dev/problems/unauthenticated",
     });
+  });
+});
+
+describe("local development identity", () => {
+  it("automatically creates a local session for protected routes without Telegram", async () => {
+    const created = await app.request(
+      `${DEVELOPMENT_ORIGIN}/api/notes`,
+      {
+        body: JSON.stringify({ body: "Available without Telegram.", title: "Development note" }),
+        headers: {
+          "Content-Type": "application/json",
+          Origin: DEVELOPMENT_ORIGIN,
+        },
+        method: "POST",
+      },
+      developmentBindings,
+    );
+
+    expect(created.status).toBe(201);
+    expect(await created.json()).toMatchObject({
+      note: { body: "Available without Telegram.", title: "Development note" },
+    });
+    const sessionToken = cookieValue(created, "__Host-session");
+    const sessions = await env.DB.prepare("SELECT token_hash FROM sessions").all();
+    expect(sessions.results).toHaveLength(1);
+
+    const me = await app.request(
+      `${DEVELOPMENT_ORIGIN}/api/auth/me`,
+      { headers: { Cookie: `__Host-session=${sessionToken}` } },
+      developmentBindings,
+    );
+    expect(me.status).toBe(200);
+    expect(await me.json()).toEqual({
+      user: {
+        displayName: "Local Developer",
+        id: expect.any(String),
+        photoUrl: null,
+        username: "local-developer",
+      },
+    });
+
+    const telegramStart = await app.request(
+      `${DEVELOPMENT_ORIGIN}/api/auth/telegram/start`,
+      undefined,
+      developmentBindings,
+    );
+    expect(telegramStart.status).toBe(404);
   });
 });
 

@@ -71,10 +71,14 @@ pathname и fragment из `requestId` для конкретного возник
 общие коды вроде `VALIDATION_FAILED`, `UNSUPPORTED_MEDIA_TYPE` и
 `UNTRUSTED_ORIGIN`. Полный состав ответов является частью `/openapi.json`.
 
-В локальной конфигурации `AUTH_MODE=disabled`. Публичные маршруты остаются
-доступны, а Telegram auth и зависящий от него Notes API отвечают `404`. Это
-позволяет начать разработку без создания бота; полный auth-сценарий включается
-явно.
+`pnpm dev` запускает Wrangler с локально переданным `AUTH_MODE=development`.
+При первом запросе к защищённому API Worker создаёт в локальной D1 обычную сессию для
+фиксированного тестового пользователя `local-developer`. Поэтому можно сразу
+разрабатывать и вручную проверять новые модули, Notes и Origin-проверки без
+Telegram, HTTPS, туннелей или deploy. Это не проверка Telegram OIDC.
+
+Production preset не содержит этого режима, а runtime дополнительно отклоняет
+`AUTH_MODE=development`, если `BUILD_REVISION` отличается от `local`.
 
 ## Архитектура, которая растёт вместе с проектом
 
@@ -144,9 +148,10 @@ curl http://localhost:8787/health
 curl http://localhost:8787/openapi.json
 ```
 
-Для локальной проверки Telegram auth скопируйте `.dev.vars.example` в
-`.dev.vars`, переключите `AUTH_MODE` в локальной конфигурации на `telegram` и
-заполните значения только на своей машине. `.dev.vars` игнорируется Git.
+Для отдельной локальной проверки Telegram auth скопируйте `.dev.vars.example`
+в `.dev.vars`, заполните значения только на своей машине и запустите
+`pnpm dev:telegram`. `.dev.vars` игнорируется Git. Этот режим по-прежнему
+требует корректного HTTPS callback для реального Telegram OIDC.
 
 Перед коммитом выполните:
 
@@ -255,6 +260,7 @@ TELEGRAM_BOT_MODE=disabled | webhook
 
 | `AUTH_MODE` | `TELEGRAM_BOT_MODE` | Результат |
 | --- | --- | --- |
+| `development` | `disabled` | Локальная D1-сессия `local-developer`; OIDC и webhook отвечают безопасным `404` |
 | `disabled` | `disabled` | OIDC/Notes и webhook отвечают безопасным `404` |
 | `telegram` | `disabled` | Работают OIDC/Notes; webhook отвечает безопасным `404` |
 | `disabled` | `webhook` | Работает Bot API webhook; OIDC/Notes отвечают безопасным `404` |
