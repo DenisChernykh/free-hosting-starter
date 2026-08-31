@@ -3,6 +3,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const DEFAULT_API_BASE_URL = "https://api.telegram.org";
 const WEBHOOK_PATH = "/telegram/webhook";
 const ALLOWED_UPDATES = ["message"];
+export const REDACTED_WEBHOOK_URL = "[REDACTED_WEBHOOK_URL]";
 
 /**
  * The operator intentionally has a very small surface. It can inspect the
@@ -152,6 +153,28 @@ function replaceSecrets(value, secrets) {
   return value;
 }
 
+function projectWebhookUrl(value) {
+  if (value === "") return "";
+  if (typeof value !== "string") return REDACTED_WEBHOOK_URL;
+
+  try {
+    const url = new URL(value);
+    if (
+      url.protocol !== "https:" ||
+      url.username !== "" ||
+      url.password !== "" ||
+      url.search !== "" ||
+      url.hash !== "" ||
+      url.pathname !== WEBHOOK_PATH
+    ) {
+      return REDACTED_WEBHOOK_URL;
+    }
+    return `${url.origin}${WEBHOOK_PATH}`;
+  } catch {
+    return REDACTED_WEBHOOK_URL;
+  }
+}
+
 function safeWebhookInfo(value, secrets) {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail();
   const allowedFields = [
@@ -168,7 +191,7 @@ function safeWebhookInfo(value, secrets) {
   const safe = Object.fromEntries(
     allowedFields
       .filter((field) => Object.hasOwn(value, field))
-      .map((field) => [field, value[field]]),
+      .map((field) => [field, field === "url" ? projectWebhookUrl(value[field]) : value[field]]),
   );
   return replaceSecrets(safe, secrets);
 }

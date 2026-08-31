@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runTelegramOperator } from "../scripts/telegram-bot-operator.mjs";
+import { REDACTED_WEBHOOK_URL, runTelegramOperator } from "../scripts/telegram-bot-operator.mjs";
 import fixture from "./fixtures/telegram-update.json";
 
 const TOKEN = "123456:operator-test-token";
@@ -57,6 +57,34 @@ describe("Telegram operator workflow", () => {
       pending_update_count: 0,
       allowed_updates: ["message"],
     });
+    expect(stdout.text()).not.toContain(TOKEN);
+    expect(stdout.text()).not.toContain(WEBHOOK_SECRET);
+    expect(stderr.text()).toBe("");
+  });
+
+  it.each([
+    ["userinfo", `https://operator:${WEBHOOK_SECRET}@example.workers.dev/telegram/webhook`],
+    ["query credential", `https://example.workers.dev/telegram/webhook?credential=${TOKEN}`],
+    ["fragment", `https://example.workers.dev/telegram/webhook#${WEBHOOK_SECRET}`],
+    ["unexpected path", `https://example.workers.dev/${WEBHOOK_SECRET}`],
+  ])("redacts unsafe %s webhook URLs from inspection output", async (_caseName, url) => {
+    const api = fakeBotApi({ url });
+    const stdout = output();
+    const stderr = output();
+
+    const exitCode = await runTelegramOperator({
+      args: ["info"],
+      environment: {
+        TELEGRAM_BOT_TOKEN: TOKEN,
+        TELEGRAM_BOT_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      },
+      stdout,
+      stderr,
+      fetchImpl: api.fetchImpl,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout.text()).url).toBe(REDACTED_WEBHOOK_URL);
     expect(stdout.text()).not.toContain(TOKEN);
     expect(stdout.text()).not.toContain(WEBHOOK_SECRET);
     expect(stderr.text()).toBe("");

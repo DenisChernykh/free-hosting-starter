@@ -14,6 +14,7 @@
 - Cloudflare Workers как runtime;
 - D1 и Drizzle ORM с SQL-миграциями;
 - Telegram OpenID Connect Authorization Code Flow с PKCE как эталонный модуль;
+- независимая Telegram Bot API webhook capability с отключённым по умолчанию режимом;
 - cookie-сессия и защищённый CRUD заметок;
 - Vitest в Cloudflare Workers runtime;
 - Biome, строгая типизация и автоматическая проверка границ модулей;
@@ -31,6 +32,7 @@ Objects, Cron, testcontainers, Swagger UI и автоматического prod
 | `GET` | `/openapi.json` | публичный | OpenAPI 3.1 контракт |
 | `GET` | `/api/auth/telegram/start` | публичный | Начать Telegram OIDC + PKCE |
 | `GET` | `/api/auth/telegram/callback` | публичный | Проверить callback и создать сессию |
+| `POST` | `/telegram/webhook` | webhook secret | Принять Telegram Bot API update (только при включённой capability) |
 | `GET` | `/api/auth/me` | сессия | Текущий пользователь |
 | `POST` | `/api/auth/logout` | сессия | Завершить текущую сессию |
 | `GET` | `/api/notes` | сессия | Список своих заметок |
@@ -249,11 +251,69 @@ Bot API — отдельная capability от Telegram OIDC. Она выклю�
 TELEGRAM_BOT_MODE=disabled | webhook
 ```
 
+Режимы независимы и включаются только своими настройками:
+
+| `AUTH_MODE` | `TELEGRAM_BOT_MODE` | Результат |
+| --- | --- | --- |
+| `disabled` | `disabled` | OIDC/Notes и webhook отвечают безопасным `404` |
+| `telegram` | `disabled` | Работают OIDC/Notes; webhook отвечает безопасным `404` |
+| `disabled` | `webhook` | Работает Bot API webhook; OIDC/Notes отвечают безопасным `404` |
+| `telegram` | `webhook` | OIDC/Notes и Bot API webhook работают независимо |
+
+Это независимость runtime-конфигурации. Checked-in production preset самого
+стартера по умолчанию включает `AUTH_MODE=telegram` и требует OIDC secrets через
+Wrangler; для bot-only derived deployment явно поменяйте production vars и
+соответствующий список required secrets перед deploy. Не добавляйте ненужные
+secrets только ради capability, которая выключена.
+
 В режиме `webhook` Worker читает `TELEGRAM_BOT_TOKEN` и
 `TELEGRAM_BOT_WEBHOOK_SECRET` из Wrangler secrets. Второй секрет передаётся в
 `setWebhook.secret_token` и проверяется в заголовке
 `X-Telegram-Bot-Api-Secret-Token`. Не переиспользуйте для этого OIDC Client
 Secret или `AUTH_FLOW_SECRET`.
+
+Маршрут — только `POST /telegram/webhook`. Его безопасные ответы не раскрывают
+токен, webhook secret, тело update, cookies или query-параметры:
+
+| Условие | Ответ |
+| --- | --- |
+| Capability выключена или использован другой HTTP-метод | `404 NOT_FOUND` |
+| Secret отсутствует или неверен | `401 UNAUTHENTICATED` |
+| Content-Type не является JSON | `415 UNSUPPORTED_MEDIA_TYPE` |
+| JSON не является объектом update | `400 VALIDATION_FAILED` |
+| Update обработан, в том числе неизвестного для reference handler типа | `200` |
+| Ошибка инициализации или обработчика | `500 INTERNAL_ERROR`; Telegram может повторить доставку |
+
+Ошибочные HTTP-ответы имеют общий формат Problem Details. В логах ошибок webhook
+остаются только категория события, pathname, request ID и безопасно разобранный
+`update_id`; данные провайдера не логируются. Общий request log добавляет лишь
+метод, статус и длительность запроса.
+
+Reference handler регистрирует только `/start` и отвечает текстом `Bot is
+ready.`. Он не создаёт пользователей, сессии, меню или бизнес-таблицы. Точка
+расширения derived product находится на уровне исходника
+`src/modules/telegram-bot/handlers.ts`: добавляйте туда transport handlers и
+вызывайте product module только через его root/public contracts. `bot.ts` при
+этом сохраняет общий lifecycle — инициализацию, cache и safe error boundary.
+Опция `createTelegramBotModule({ createWebhookHandler })` — test/composition seam
+(например, для fake handler в Vitest), а не product extension: её переопределение
+заменяет core lifecycle. Переданный handler получает проверенный request и
+контекст с `requestId`, pathname и (если он корректен) `updateId`.
+
+### At-least-once delivery and idempotency
+
+Telegram может повторно доставить update при timeout или ответе с ошибкой, поэтому
+webhook имеет семантику at-least-once: повторы и конкурентная доставка ожидаемы.
+Capability передаёт `update_id` в контекст вызванного handler-а. Если команда
+продукта меняет durable state, продукт сам выводит стабильный ключ, например
+`telegram:<bot-id>:update:<update-id>`, и сохраняет его в той же транзакции D1,
+что и бизнес-мутацию. Уже зафиксированная команда должна вернуть успех без
+повторной мутации. Общей таблицы `processed_updates` в стартере нет.
+
+Это не обещает exactly-once для внешнего `sendMessage`: сбой после принятия
+сообщения Telegram, но до локального завершения, может привести к дублю. Для
+надёжной исходящей доставки потребуются отдельно спроектированные outbox и
+механизм восстановления; Queue, Cron и Durable Objects в baseline не входят.
 
 Для локальной проверки HTTP-границы без настоящего токена запустите Worker и
 отправьте сохранённый fake update:
@@ -405,13 +465,27 @@ abuse-задача, которую следует решить до привле
   без настоящего токена; fake Bot API в тестах не заменяет Telegram.
 - `telegram:operator info` — отдельная remote inspection; `set` и `clear` —
   явные remote mutations и не запускаются автоматически.
-- Fake OIDC в тестах не заменяет реальный Telegram smoke.
+- Fake OIDC в тестах не заменяет реальный OIDC/Notes smoke.
+- `/health`, fake update, fake Bot API и `telegram:operator info` сами по себе не
+  доказывают реальный Bot API smoke.
 
-Полный production smoke выполняется в обычном браузере с выделенным тестовым
-ботом: старт входа → согласие Telegram → callback → `/api/auth/me` →
+### OIDC/Notes smoke
+
+OIDC/Notes smoke выполняется в обычном браузере с выделенным тестовым ботом:
+старт входа → согласие Telegram → callback → `/api/auth/me` →
 create/list/get/update/delete своей заметки → logout → отказ старой сессии.
-Только такой сценарий подтверждает совместную работу BotFather-настроек, OIDC,
-cookies, Worker и D1.
+Только такой сценарий подтверждает совместную работу BotFather-настроек OIDC,
+cookies, Worker и D1. Он не доказывает реальную доставку Bot API webhook.
+
+### Bot API smoke (TB-06, отдельное разрешение)
+
+Реальный Bot API smoke требует отдельного разрешения TB-06, выделенного test bot,
+настроенных secrets и явно выбранной hosted deployment revision. Наблюдаемый
+сквозной путь: пользователь отправляет `/start` в Telegram → Telegram доставляет
+`POST /telegram/webhook` на опубликованный Worker → handler обрабатывает update →
+Worker вызывает Bot API → пользователь получает ответ бота. `setWebhook`, deploy,
+inspection и запись evidence выполняются отдельными операциями; они не являются
+частью `pnpm check` и не запускаются автоматически.
 
 ## Лицензия
 
