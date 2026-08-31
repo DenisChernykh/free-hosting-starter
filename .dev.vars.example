@@ -1,5 +1,5 @@
-# Local AUTH_MODE and TELEGRAM_BOT_MODE are disabled by default in wrangler.jsonc.
-# To exercise Telegram OIDC locally, set AUTH_MODE=telegram and provide its values.
+# `pnpm dev` uses a local development identity and does not need these values.
+# `pnpm dev:telegram` uses AUTH_MODE=telegram and needs these OIDC values.
 TELEGRAM_OIDC_CLIENT_ID="replace-with-botfather-client-id"
 TELEGRAM_OIDC_CLIENT_SECRET="replace-with-botfather-client-secret"
 AUTH_FLOW_SECRET="replace-with-32-random-bytes-as-base64url"

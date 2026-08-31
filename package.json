@@ -12,7 +12,8 @@
   "packageManager": "pnpm@11.15.1",
   "scripts": {
     "check": "pnpm typegen:check && pnpm format:check && pnpm boundaries:check && pnpm typecheck && pnpm test && pnpm deploy:dry-run",
-    "dev": "wrangler dev --local",
+    "dev": "wrangler dev --local --var AUTH_MODE:development",
+    "dev:telegram": "wrangler dev --local --var AUTH_MODE:telegram",
     "typegen": "wrangler types src/worker-configuration.d.ts --env-interface CloudflareBindings",
     "typegen:check": "wrangler types src/worker-configuration.d.ts --env-interface CloudflareBindings --check",
     "format": "biome check --write .",

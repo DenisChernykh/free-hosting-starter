@@ -10,6 +10,13 @@ import type { IdentitySessionRepository, LoginFlowCodec, TelegramOidcClient } fr
 
 const LOGIN_FLOW_TTL_MS = 10 * 60 * 1000;
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const DEVELOPMENT_IDENTITY = {
+  displayName: "Local Developer",
+  issuer: "urn:free-hosting-starter:development",
+  photoUrl: null,
+  subject: "local-developer",
+  username: "local-developer",
+} as const;
 
 export class StartTelegramLogin {
   constructor(
@@ -106,6 +113,32 @@ export class CompleteTelegramLogin {
     });
 
     return { sessionToken, user };
+  }
+}
+
+export class StartDevelopmentSession {
+  constructor(private readonly repository: IdentitySessionRepository) {}
+
+  async execute(now: number): Promise<AuthenticationResult> {
+    const sessionToken = randomBase64Url(32);
+    const user = await this.repository.authenticateExternalIdentity(DEVELOPMENT_IDENTITY, {
+      tokenHash: await sha256Base64Url(sessionToken),
+      createdAt: now,
+      expiresAt: now + SESSION_TTL_MS,
+    });
+    return { sessionToken, user };
+  }
+}
+
+export class FindDevelopmentSession {
+  constructor(private readonly repository: IdentitySessionRepository) {}
+
+  async execute(input: { now: number; sessionToken: string }): Promise<AuthenticatedUser | null> {
+    return this.repository.findUserBySessionForExternalIdentity(
+      await sha256Base64Url(input.sessionToken),
+      input.now,
+      DEVELOPMENT_IDENTITY,
+    );
   }
 }
 

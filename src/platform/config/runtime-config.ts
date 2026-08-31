@@ -3,7 +3,7 @@ import { decodeBase64Url } from "../crypto/base64url";
 
 const baseConfigSchema = z.object({
   APP_ORIGIN: z.url(),
-  AUTH_MODE: z.enum(["disabled", "telegram"]),
+  AUTH_MODE: z.enum(["development", "disabled", "telegram"]),
   AUTH_SUCCESS_REDIRECT_URL: z.url(),
   BUILD_REVISION: z.string().trim().min(1).max(128),
   TELEGRAM_BOT_MODE: z.enum(["disabled", "webhook"]),
@@ -42,6 +42,10 @@ export type DisabledRuntimeConfig = BaseRuntimeConfig & {
   authMode: "disabled";
 };
 
+export type DevelopmentRuntimeConfig = BaseRuntimeConfig & {
+  authMode: "development";
+};
+
 export type TelegramAuthRuntimeConfig = {
   authFlowSecret: string;
   authMode: "telegram";
@@ -65,7 +69,10 @@ export type TelegramBotRuntimeConfig =
   | DisabledTelegramBotRuntimeConfig
   | WebhookTelegramBotRuntimeConfig;
 
-export type AuthRuntimeConfig = Pick<DisabledRuntimeConfig, "authMode"> | TelegramAuthRuntimeConfig;
+export type AuthRuntimeConfig =
+  | Pick<DisabledRuntimeConfig, "authMode">
+  | Pick<DevelopmentRuntimeConfig, "authMode">
+  | TelegramAuthRuntimeConfig;
 
 export type RuntimeConfig = BaseRuntimeConfig & AuthRuntimeConfig & TelegramBotRuntimeConfig;
 
@@ -77,8 +84,10 @@ type RuntimeModeBindings = {
 
 // Wrangler's required secret list is unconditional; keep bot secrets optional
 // here and let the selected bot mode decide whether they must be present.
-export type RuntimeConfigBindings = Omit<CloudflareBindings, "TELEGRAM_BOT_MODE"> &
-  RuntimeModeBindings;
+export type RuntimeConfigBindings = Omit<CloudflareBindings, "AUTH_MODE" | "TELEGRAM_BOT_MODE"> &
+  RuntimeModeBindings & {
+    AUTH_MODE: "development" | "disabled" | "telegram";
+  };
 
 export function readRuntimeConfig(bindings: RuntimeConfigBindings): RuntimeConfig {
   const base = baseConfigSchema.parse(bindings);
@@ -91,6 +100,12 @@ export function readRuntimeConfig(bindings: RuntimeConfigBindings): RuntimeConfi
 
   if (appOriginUrl.protocol !== "https:" && appOriginUrl.hostname !== "localhost") {
     throw new Error("APP_ORIGIN must use HTTPS outside localhost");
+  }
+  if (
+    base.AUTH_MODE === "development" &&
+    (appOriginUrl.protocol !== "http:" || appOriginUrl.hostname !== "localhost")
+  ) {
+    throw new Error("AUTH_MODE=development is only permitted for http://localhost");
   }
 
   const successUrl = new URL(base.AUTH_SUCCESS_REDIRECT_URL);
@@ -107,15 +122,22 @@ export function readRuntimeConfig(bindings: RuntimeConfigBindings): RuntimeConfi
   const auth: AuthRuntimeConfig =
     base.AUTH_MODE === "disabled"
       ? { authMode: "disabled" }
-      : (() => {
-          const telegram = telegramAuthSecretsSchema.parse(bindings);
-          return {
-            authFlowSecret: telegram.AUTH_FLOW_SECRET,
-            authMode: "telegram" as const,
-            telegramClientId: telegram.TELEGRAM_OIDC_CLIENT_ID,
-            telegramClientSecret: telegram.TELEGRAM_OIDC_CLIENT_SECRET,
-          };
-        })();
+      : base.AUTH_MODE === "development"
+        ? (() => {
+            if (base.BUILD_REVISION !== "local") {
+              throw new Error("AUTH_MODE=development is only permitted with BUILD_REVISION=local");
+            }
+            return { authMode: "development" as const };
+          })()
+        : (() => {
+            const telegram = telegramAuthSecretsSchema.parse(bindings);
+            return {
+              authFlowSecret: telegram.AUTH_FLOW_SECRET,
+              authMode: "telegram" as const,
+              telegramClientId: telegram.TELEGRAM_OIDC_CLIENT_ID,
+              telegramClientSecret: telegram.TELEGRAM_OIDC_CLIENT_SECRET,
+            };
+          })();
 
   const telegramBot: TelegramBotRuntimeConfig =
     base.TELEGRAM_BOT_MODE === "disabled"

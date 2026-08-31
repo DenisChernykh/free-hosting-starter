@@ -57,6 +57,22 @@ describe("runtime configuration capability matrix", () => {
       },
     },
     {
+      authMode: "development",
+      botMode: "disabled",
+      overrides: {
+        APP_ORIGIN: "http://localhost:8787",
+        AUTH_MODE: "development",
+        AUTH_SUCCESS_REDIRECT_URL: "http://localhost:8787/api/auth/me",
+      } as const,
+      expected: {
+        appOrigin: "http://localhost:8787",
+        authMode: "development",
+        authSuccessRedirectUrl: "http://localhost:8787/api/auth/me",
+        buildRevision: "local",
+        telegramBotMode: "disabled",
+      },
+    },
+    {
       authMode: "telegram",
       botMode: "disabled",
       overrides: { AUTH_MODE: "telegram", ...authBindings() } as const,
@@ -122,6 +138,25 @@ describe("runtime configuration capability matrix", () => {
         } as const),
       ),
     ).toMatchObject({ authMode: "disabled", telegramBotMode: "disabled" });
+  });
+
+  it("rejects development auth outside the local runtime", () => {
+    expect(() =>
+      readRuntimeConfig(
+        bindings({
+          APP_ORIGIN: "http://localhost:8787",
+          AUTH_MODE: "development",
+          AUTH_SUCCESS_REDIRECT_URL: "http://localhost:8787/api/auth/me",
+          BUILD_REVISION: "production",
+        } as const),
+      ),
+    ).toThrow("AUTH_MODE=development is only permitted with BUILD_REVISION=local");
+  });
+
+  it("rejects development auth with a non-local origin", () => {
+    expect(() => readRuntimeConfig(bindings({ AUTH_MODE: "development" } as const))).toThrow(
+      "AUTH_MODE=development is only permitted for http://localhost",
+    );
   });
 
   it.each([
