@@ -1,0 +1,24 @@
+{
+  "update_id": 900000001,
+  "message": {
+    "message_id": 1,
+    "date": 1735689600,
+    "chat": {
+      "id": 123456789,
+      "type": "private"
+    },
+    "from": {
+      "id": 987654321,
+      "is_bot": false,
+      "first_name": "Local"
+    },
+    "text": "/start",
+    "entities": [
+      {
+        "offset": 0,
+        "length": 6,
+        "type": "bot_command"
+      }
+    ]
+  }
+}

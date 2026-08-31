@@ -241,6 +241,110 @@ Production cookie `__Host-session` имеет `Secure`, `HttpOnly`, `SameSite=La
 не образуют рабочую cookie-сессию. Если UI понадобится, отдавайте его с того же
 Worker origin через Static Assets либо ставьте frontend и API за единым origin.
 
+## Telegram Bot API webhook
+
+Bot API — отдельная capability от Telegram OIDC. Она выключена по умолчанию:
+
+```text
+TELEGRAM_BOT_MODE=disabled | webhook
+```
+
+В режиме `webhook` Worker читает `TELEGRAM_BOT_TOKEN` и
+`TELEGRAM_BOT_WEBHOOK_SECRET` из Wrangler secrets. Второй секрет передаётся в
+`setWebhook.secret_token` и проверяется в заголовке
+`X-Telegram-Bot-Api-Secret-Token`. Не переиспользуйте для этого OIDC Client
+Secret или `AUTH_FLOW_SECRET`.
+
+Для локальной проверки HTTP-границы без настоящего токена запустите Worker и
+отправьте сохранённый fake update:
+
+```bash
+pnpm dev
+./scripts/curl-telegram-update.sh
+```
+
+С локальной конфигурацией по умолчанию ожидается безопасный `404`; если
+capability включена, запрос без webhook-заголовка завершается `401` до
+инициализации Bot API. Этот сценарий не обращается к Telegram и не является
+проверкой реального ответа бота. Fake Bot API и `/start` проверяются в Vitest:
+
+```bash
+pnpm exec vitest run test/telegram-bot.spec.ts test/telegram-bot-operator.spec.mjs
+```
+
+### Ручная регистрация и inspection
+
+Изменение состояния webhook выполняется только отдельной operator-командой.
+Секреты нельзя передавать аргументами (`--token`, `--secret` и т. п.) или
+выводить; команда принимает их только из переменных окружения либо из stdin.
+`info` и `clear` требуют только token, а `set` — две непустые строки (token,
+затем webhook secret):
+
+```bash
+pnpm telegram:operator -- info
+pnpm telegram:operator -- set https://<ваш-workers.dev>/telegram/webhook
+pnpm telegram:operator -- clear
+```
+
+`set` требует точный HTTPS URL `https://<ваш-workers.dev>/telegram/webhook`
+без query-параметров. Он передаёт Telegram только обновления `message` и
+ставит `drop_pending_updates=false`. Для намеренного удаления накопленных
+обновлений нужен явный флаг; команда выведет предупреждение:
+
+```bash
+pnpm telegram:operator -- set https://<ваш-workers.dev>/telegram/webhook --drop-pending-updates
+```
+
+Перед ручной операцией создайте независимые production secrets через скрытый
+prompt Wrangler и включите `TELEGRAM_BOT_MODE=webhook` в production vars:
+
+```bash
+pnpm exec wrangler secret put TELEGRAM_BOT_TOKEN --env production
+pnpm exec wrangler secret put TELEGRAM_BOT_WEBHOOK_SECRET --env production
+```
+
+Токен бота берётся у `@BotFather`. Независимый webhook secret сгенерируйте в
+password manager или криптографическом генераторе; он должен содержать от 1 до
+256 символов только из `A-Z`, `a-z`, `0-9`, `_` и `-`. Секреты, сохранённые
+через `wrangler secret put`, становятся доступными Worker, но не появляются
+автоматически в environment локального operator-процесса.
+
+Для локального operator-сеанса введите значения без отображения и удалите их
+из environment после операции. В команды и shell history не попадают сами
+секреты:
+
+```bash
+unset TELEGRAM_BOT_TOKEN TELEGRAM_BOT_WEBHOOK_SECRET
+printf '%s' 'Telegram bot token (hidden): ' >&2
+read -r -s TELEGRAM_BOT_TOKEN
+printf '\n' >&2
+printf '%s' 'Telegram webhook secret (hidden): ' >&2
+read -r -s TELEGRAM_BOT_WEBHOOK_SECRET
+printf '\n' >&2
+export TELEGRAM_BOT_TOKEN TELEGRAM_BOT_WEBHOOK_SECRET
+
+pnpm telegram:operator -- info
+pnpm telegram:operator -- set https://<ваш-workers.dev>/telegram/webhook
+pnpm telegram:operator -- clear
+
+unset TELEGRAM_BOT_TOKEN TELEGRAM_BOT_WEBHOOK_SECRET
+```
+
+Также допустим non-echoing stdin pipeline из доверенного password manager или
+другого secret source: для `info`/`clear` он передаёт одну строку token, для
+`set` — две строки в порядке token, webhook secret. Не используйте `echo` или
+`printf` для передачи самого секрета: источник должен писать значения напрямую
+в stdin operator-команды, а не показывать их в выводе.
+
+После явно разрешённого `set` выполните inspection — `info` вызывает только
+`getWebhookInfo` и позволяет проверить URL, `pending_update_count`, список
+обновлений и последнюю ошибку доставки. Для rollback вызовите `clear`, затем
+снова `info`; `clear` использует `setWebhook` с пустым URL и по умолчанию также
+не удаляет pending updates. Пока webhook установлен, Telegram не позволяет
+использовать `getUpdates`; сначала удалите webhook, если требуется перейти на
+polling. Установка, очистка и inspection не выполняются при старте Worker,
+тестах, в CI или во время deploy.
+
 ## Ручной production deploy
 
 CI ничего не публикует. Перед первым deploy:
@@ -249,7 +353,9 @@ CI ничего не публикует. Перед первым deploy:
 2. Создайте D1 и замените template placeholder, как описано выше.
 3. Узнайте свой реальный `workers.dev` hostname и обновите `APP_ORIGIN` и
    `AUTH_SUCCESS_REDIRECT_URL` в production env.
-4. Настройте BotFather callback и положите три секрета скрытыми командами.
+4. Настройте BotFather callback для OIDC и положите требуемые OIDC secrets
+   скрытыми командами; Bot API secrets добавляйте только при явном включении
+   `TELEGRAM_BOT_MODE=webhook`.
 5. Выполните локальный `pnpm check`.
 6. Примените миграции и опубликуйте Worker вручную:
 
@@ -257,6 +363,11 @@ CI ничего не публикует. Перед первым deploy:
 pnpm db:migrate:remote
 pnpm deploy
 ```
+
+`pnpm deploy` не меняет состояние Telegram. После публикации, если Bot API
+capability явно включена, отдельной командой `telegram:operator set` задайте
+точный HTTPS webhook и затем выполните `telegram:operator info`. Это две
+разные операции с разными доказательствами.
 
 Production resource names по умолчанию: Worker `free-hosting-starter`, D1
 `free-hosting-starter-db`. Custom domain для базового сценария не требуется.
@@ -290,6 +401,10 @@ abuse-задача, которую следует решить до привле
   но не доступность Worker.
 - Успешный deploy и `200` от `/health` доказывают доступность опубликованного
   Worker, но не Telegram login и не CRUD.
+- `scripts/curl-telegram-update.sh` доказывает только безопасную HTTP-границу
+  без настоящего токена; fake Bot API в тестах не заменяет Telegram.
+- `telegram:operator info` — отдельная remote inspection; `set` и `clear` —
+  явные remote mutations и не запускаются автоматически.
 - Fake OIDC в тестах не заменяет реальный Telegram smoke.
 
 Полный production smoke выполняется в обычном браузере с выделенным тестовым
