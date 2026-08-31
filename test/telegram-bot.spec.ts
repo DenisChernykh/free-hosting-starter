@@ -1,7 +1,11 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../src";
-import type { TelegramWebhookHandler } from "../src/modules/telegram-bot";
+import type {
+  TelegramWebhookHandler,
+  TelegramWebhookRequestContext,
+} from "../src/modules/telegram-bot";
+import { TELEGRAM_BOT_INITIALIZATION_TIMEOUT_MS } from "../src/modules/telegram-bot";
 import { createTelegramWebhookHandler } from "../src/modules/telegram-bot/bot";
 import type { RuntimeConfigBindings } from "../src/platform/config/runtime-config";
 import type { ProblemDetails } from "../src/platform/http/problem-details";
@@ -149,26 +153,32 @@ describe("Telegram Bot webhook", () => {
   });
 
   it("turns an injected handler failure into a retryable 500", async () => {
+    let attempts = 0;
     const factory = vi.fn(() => {
       const handler: TelegramWebhookHandler = async () => {
+        attempts += 1;
         throw new Error("private handler failure");
       };
       return handler;
     });
     const app = createApp({ telegramBot: { createWebhookHandler: factory } });
-    const response = await request(app, webhookBindings, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Telegram-Bot-Api-Secret-Token": WEBHOOK_SECRET,
-      },
-      body: JSON.stringify({ update_id: 43 }),
-    });
+    for (const updateId of [43, 44]) {
+      const response = await request(app, webhookBindings, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Telegram-Bot-Api-Secret-Token": WEBHOOK_SECRET,
+        },
+        body: JSON.stringify({ update_id: updateId }),
+      });
 
-    expect(response.status).toBe(500);
-    const body = await problemResponse(response);
-    expect(body.code).toBe("INTERNAL_ERROR");
-    expect(JSON.stringify(body)).not.toContain("private handler failure");
+      expect(response.status).toBe(500);
+      const body = await problemResponse(response);
+      expect(body.code).toBe("INTERNAL_ERROR");
+      expect(JSON.stringify(body)).not.toContain("private handler failure");
+    }
+    expect(attempts).toBe(2);
+    expect(factory).toHaveBeenCalledOnce();
   });
 
   it("registers the deterministic /start handler without a real Telegram request", async () => {
@@ -215,6 +225,180 @@ describe("Telegram Bot webhook", () => {
       expect(calls).toEqual(expect.arrayContaining([expect.stringContaining("/getMe")]));
     } finally {
       vi.unstubAllGlobals();
+    }
+  });
+
+  it("initializes bot metadata once per isolate and handles unsupported updates promptly", async () => {
+    const token = "123456:metadata-cache-test";
+    let getMeCalls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : input.toString();
+      if (url.endsWith("/getMe")) {
+        getMeCalls += 1;
+        return Response.json({
+          ok: true,
+          result: { id: 123, is_bot: true, first_name: "Test", username: "test_bot" },
+        });
+      }
+      throw new Error(`Unexpected Telegram API request: ${url} ${String(init?.body)}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const first = createTelegramWebhookHandler({ telegramBotToken: token });
+      const second = createTelegramWebhookHandler({ telegramBotToken: token });
+      const update = JSON.stringify({ update_id: 501, edited_channel_post: { text: "ignored" } });
+      const requestFor = () =>
+        new Request("https://example.test/telegram/webhook", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: update,
+        });
+
+      const [firstResponse, secondResponse] = await Promise.all([
+        first(requestFor()),
+        second(requestFor()),
+      ]);
+
+      expect(firstResponse.status).toBe(200);
+      expect(secondResponse.status).toBe(200);
+      expect(getMeCalls).toBe(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each(["stalled", "server-error"])(
+    "bounds %s bot initialization and permits a later retry",
+    async (failureMode) => {
+      const token = `123456:init-timeout-${failureMode}`;
+      const bindings = { ...webhookBindings, TELEGRAM_BOT_TOKEN: token };
+      let attempts = 0;
+      let allowSuccess = false;
+      const fetchMock = vi.fn(
+        async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+          attempts += 1;
+          if (allowSuccess) {
+            return Response.json({
+              ok: true,
+              result: { id: 123, is_bot: true, first_name: "Test", username: "test_bot" },
+            });
+          }
+          if (failureMode === "stalled") {
+            return await new Promise<Response>((_resolve, reject) => {
+              const rejectAborted = () => reject(new Error("provider stalled with token"));
+              if (init?.signal?.aborted) rejectAborted();
+              else init?.signal?.addEventListener("abort", rejectAborted, { once: true });
+            });
+          }
+          return Response.json({
+            ok: false,
+            error_code: 500,
+            description: "provider failure with secret",
+          });
+        },
+      );
+      const logs: string[] = [];
+      const errorSpy = vi.spyOn(console, "error").mockImplementation((...args) => {
+        logs.push(args.map((value) => String(value)).join(" "));
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      try {
+        const app = createApp();
+        const failedRequest = request(app, bindings, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Telegram-Bot-Api-Secret-Token": WEBHOOK_SECRET,
+          },
+          body: JSON.stringify({ update_id: 601, edited_channel_post: { text: "hidden" } }),
+        });
+        const failedResponse = await failedRequest;
+
+        expect(failedResponse.status).toBe(500);
+        expect((await problemResponse(failedResponse)).code).toBe("INTERNAL_ERROR");
+        expect(logs.join("\n")).toContain('"category":"initialization_failure"');
+        expect(logs.join("\n")).not.toContain(token);
+
+        allowSuccess = true;
+        const retriedResponse = await request(app, bindings, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Telegram-Bot-Api-Secret-Token": WEBHOOK_SECRET,
+          },
+          body: JSON.stringify({ update_id: 602, edited_channel_post: { text: "hidden" } }),
+        });
+
+        expect(retriedResponse.status).toBe(200);
+        expect(attempts).toBeGreaterThan(1);
+      } finally {
+        errorSpy.mockRestore();
+        vi.unstubAllGlobals();
+      }
+    },
+    TELEGRAM_BOT_INITIALIZATION_TIMEOUT_MS + 10_000,
+  );
+
+  it("propagates safe request context and redacts provider data from failure logs", async () => {
+    const logs: string[] = [];
+    const errorSpy = vi.spyOn(console, "error").mockImplementation((...args) => {
+      logs.push(args.map((value) => String(value)).join(" "));
+    });
+    const logSpy = vi.spyOn(console, "log").mockImplementation((...args) => {
+      logs.push(args.map((value) => String(value)).join(" "));
+    });
+    const contexts: TelegramWebhookRequestContext[] = [];
+    const factory = vi.fn(() => {
+      const handler: TelegramWebhookHandler = async (_request, context) => {
+        if (context) contexts.push(context);
+        throw new Error("provider token webhook_secret-01 cookie-secret message text query-secret");
+      };
+      return handler;
+    });
+    const app = createApp({ telegramBot: { createWebhookHandler: factory } });
+
+    try {
+      const response = await app.request(
+        `${APP_ORIGIN}/telegram/webhook?query=query-secret`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Cookie: "session=cookie-secret",
+            "CF-Ray": "request-id-01",
+            "X-Telegram-Bot-Api-Secret-Token": WEBHOOK_SECRET,
+          },
+          body: JSON.stringify({
+            update_id: 777,
+            message: { text: "message text", token: BOT_TOKEN, secret: WEBHOOK_SECRET },
+          }),
+        },
+        webhookBindings,
+      );
+
+      expect(response.status).toBe(500);
+      expect(contexts).toEqual([
+        { path: "/telegram/webhook", requestId: "request", updateId: 777 },
+      ]);
+      const serializedLogs = logs.join("\n");
+      expect(serializedLogs).toContain('"event":"telegram_webhook_failure"');
+      expect(serializedLogs).toContain('"category":"handler_failure"');
+      expect(serializedLogs).toContain('"path":"/telegram/webhook"');
+      expect(serializedLogs).toContain('"update_id":777');
+      for (const secret of [
+        BOT_TOKEN,
+        WEBHOOK_SECRET,
+        "cookie-secret",
+        "query-secret",
+        "message text",
+      ]) {
+        expect(serializedLogs).not.toContain(secret);
+      }
+    } finally {
+      errorSpy.mockRestore();
+      logSpy.mockRestore();
     }
   });
 

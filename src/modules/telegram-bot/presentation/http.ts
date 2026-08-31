@@ -6,7 +6,13 @@ import { readRuntimeConfig } from "../../../platform/config/runtime-config";
 import { timingSafeEqualStrings } from "../../../platform/crypto/secure-values";
 import type { WorkerHttpEnv } from "../../../platform/http/environment";
 import { problemDetailsSchema } from "../../../platform/http/problem-details-schema";
-import type { TelegramBotHandlerConfig, TelegramWebhookHandler } from "../bot";
+import {
+  TELEGRAM_BOT_FAILURE_CATEGORIES,
+  type TelegramBotHandlerConfig,
+  TelegramWebhookFailure,
+  type TelegramWebhookHandler,
+  type TelegramWebhookRequestContext,
+} from "../bot";
 import {
   telegramWebhookInvalidBody,
   telegramWebhookNotFound,
@@ -105,10 +111,34 @@ const requireJson: MiddlewareHandler<TelegramBotHttpEnv> = async (c, next) => {
   await next();
 };
 
+function updateId(update: Record<string, unknown>): number | undefined {
+  const value = update.update_id;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function webhookContext(
+  c: Context<TelegramBotHttpEnv>,
+  update: Record<string, unknown>,
+): TelegramWebhookRequestContext {
+  return {
+    path: new URL(c.req.url).pathname,
+    requestId: c.get("requestId") || "unknown",
+    ...(updateId(update) === undefined ? {} : { updateId: updateId(update) }),
+  };
+}
+
 function rebuildRequest(c: Context<TelegramBotHttpEnv>, update: Record<string, unknown>): Request {
   const headers = new Headers(c.req.header());
   headers.delete("content-length");
-  return new Request(c.req.url, {
+  headers.delete("cookie");
+  headers.delete("authorization");
+  headers.delete("x-telegram-bot-api-secret-token");
+
+  const url = new URL(c.req.url);
+  url.search = "";
+  url.hash = "";
+
+  return new Request(url, {
     method: c.req.method,
     headers,
     body: JSON.stringify(update),
@@ -142,16 +172,47 @@ export function createTelegramBotHttp(
       const config = webhookConfig(c.env);
       if (!config) return telegramWebhookNotFound(c);
 
+      const update = c.req.valid("json");
+      const context = webhookContext(c, update);
+
       if (!cached || cached.token !== config.telegramBotToken) {
-        cached = {
-          handler: dependencies.createWebhookHandler({
-            telegramBotToken: config.telegramBotToken,
-          }),
-          token: config.telegramBotToken,
-        };
+        try {
+          cached = {
+            handler: dependencies.createWebhookHandler({
+              telegramBotToken: config.telegramBotToken,
+            }),
+            token: config.telegramBotToken,
+          };
+        } catch {
+          console.error(
+            JSON.stringify({
+              category: TELEGRAM_BOT_FAILURE_CATEGORIES.initialization,
+              event: "telegram_webhook_failure",
+              path: context.path,
+              requestId: context.requestId,
+              ...(context.updateId === undefined ? {} : { update_id: context.updateId }),
+            }),
+          );
+          throw new TelegramWebhookFailure(TELEGRAM_BOT_FAILURE_CATEGORIES.initialization);
+        }
       }
 
-      return cached.handler(rebuildRequest(c, c.req.valid("json")));
+      try {
+        return await cached.handler(rebuildRequest(c, update), context);
+      } catch (error) {
+        if (error instanceof TelegramWebhookFailure) throw error;
+
+        console.error(
+          JSON.stringify({
+            category: TELEGRAM_BOT_FAILURE_CATEGORIES.handler,
+            event: "telegram_webhook_failure",
+            path: context.path,
+            requestId: context.requestId,
+            ...(context.updateId === undefined ? {} : { update_id: context.updateId }),
+          }),
+        );
+        throw new TelegramWebhookFailure(TELEGRAM_BOT_FAILURE_CATEGORIES.handler);
+      }
     },
   );
 
