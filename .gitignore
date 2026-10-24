@@ -10,3 +10,9 @@ dist/
 !.env.example
 
 *.log
+.pnpm-store/
+.env
+.env.local
+.env.production
+.dev.vars
+!*.example
